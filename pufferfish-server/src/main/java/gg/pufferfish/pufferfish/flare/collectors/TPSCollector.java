@@ -22,7 +22,7 @@ public class TPSCollector extends LiveCollector {
 
     @Override
     public void run() {
-        long[] times = MinecraftServer.getServer().tickTimes5s.getTimes();
+        long[] times = MinecraftServer.getServer().getTickTimesNanos();
         double mspt = ((double) Arrays.stream(times).sum() / (double) times.length) * 1.0E-6D;
 
         this.report(TPS, Math.min(20D, Math.round(Bukkit.getServer().getTPS()[0] * 100d) / 100d));
