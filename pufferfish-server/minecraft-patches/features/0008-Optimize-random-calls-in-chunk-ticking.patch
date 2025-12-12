@@ -34,10 +34,10 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index c0ed4e023b35a076b554fa387e9a2324166b2fae..5cca28cb4536023da5feff97ab2e8f65133373f8 100644
+index ab5efa15a1f56feda7d3e91009a517e98216e734..8db57a523422f1762bd758704ebbbf750e9f6dbe 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -982,7 +982,7 @@ public class ServerLevel extends Level implements ServerEntityGetter, WorldGenLe
+@@ -1002,7 +1002,7 @@ public class ServerLevel extends Level implements ServerEntityGetter, WorldGenLe
          int minBlockZ = pos.getMinBlockZ();
          ProfilerFiller profilerFiller = Profiler.get();
          profilerFiller.push("thunder");
@@ -47,10 +47,10 @@ index c0ed4e023b35a076b554fa387e9a2324166b2fae..5cca28cb4536023da5feff97ab2e8f65
              if (this.isRainingAt(blockPos)) {
                  DifficultyInstance currentDifficultyAt = this.getCurrentDifficultyAt(blockPos);
 diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
-index de59760d27280555a334bda4f436164568cffbd6..05177ea162f791bd9247cd28a9bde76d082a7b4f 100644
+index 7f2fa1978c2ca5620f0f3c1f26570d924d7fb3e5..e4566af3621c9f41885e44157d29fc23d543867a 100644
 --- a/net/minecraft/world/level/chunk/LevelChunk.java
 +++ b/net/minecraft/world/level/chunk/LevelChunk.java
-@@ -131,6 +131,18 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -130,6 +130,18 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
      private final boolean debug;
      private final BlockState defaultBlockState;
  
@@ -69,7 +69,7 @@ index de59760d27280555a334bda4f436164568cffbd6..05177ea162f791bd9247cd28a9bde76d
      @Override
      public final BlockState moonrise$getBlock(final int x, final int y, final int z) {
          return this.getBlockStateFinal(x, y, z);
-@@ -173,6 +185,8 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+@@ -172,6 +184,8 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
          this.debug = !empty && this.level.isDebug();
          this.defaultBlockState = empty ? VOID_AIR_BLOCKSTATE : AIR_BLOCKSTATE;
          // Paper end - get block chunk optimisation
@@ -77,4 +77,4 @@ index de59760d27280555a334bda4f436164568cffbd6..05177ea162f791bd9247cd28a9bde76d
 +        this.lightningTick = new java.util.Random().nextInt(100000) << 1; // Pufferfish - initialize lightning tick
      }
  
-     public LevelChunk(ServerLevel level, ProtoChunk chunk, @Nullable LevelChunk.PostLoadProcessor postLoad) {
+     public LevelChunk(ServerLevel level, ProtoChunk chunk, LevelChunk.@Nullable PostLoadProcessor postLoad) {

@@ -17,10 +17,10 @@ and, in my opinion, worth the low risk of minor mob-spawning-related
 inconsistencies.
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index f63a5567a2e845de904c2dacfbb875049e3e0c65..ea9c2b9756bd993ac8647b6310a4d6ca2899638f 100644
+index e7d9306dfde918c1abb9e5320d7315810a66a4d7..cb5ac97f3183fc2583493b29fa353dfdb0601b5e 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -302,6 +302,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -306,6 +306,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
      public boolean isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
      private final Set<String> pluginsBlockingSleep = new java.util.HashSet<>(); // Paper - API to allow/disallow tick sleeping
      public static final long SERVER_INIT = System.nanoTime(); // Paper - Lag compensation
@@ -29,10 +29,10 @@ index f63a5567a2e845de904c2dacfbb875049e3e0c65..ea9c2b9756bd993ac8647b6310a4d6ca
      public final ca.spottedleaf.moonrise.common.time.TickData tickTimes1s  = new ca.spottedleaf.moonrise.common.time.TickData(java.util.concurrent.TimeUnit.SECONDS.toNanos(1L));
      public final ca.spottedleaf.moonrise.common.time.TickData tickTimes5s  = new ca.spottedleaf.moonrise.common.time.TickData(java.util.concurrent.TimeUnit.SECONDS.toNanos(5L));
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index 44b731da23936642faf4ae18e25d9a251ab75c94..079c704cbf9465f0fc4cf45b624d9c165eaa8253 100644
+index 189eef1feb66394037abc2bef2fe57e7a65d0c36..3eed0570a1614501c5e49d8ed6967f173fa57c9d 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -395,6 +395,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -392,6 +392,7 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
                  LOGGER.info("JMX monitoring enabled");
              }
  
@@ -41,19 +41,19 @@ index 44b731da23936642faf4ae18e25d9a251ab75c94..079c704cbf9465f0fc4cf45b624d9c16
              return true;
          }
 diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
-index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595efc45fe026 100644
+index af67b07722bb0125acd081dab767d7e7b360623b..12cf7dc8d2c7123196f4a069ad29bcf0e49e25ce 100644
 --- a/net/minecraft/server/level/ServerChunkCache.java
 +++ b/net/minecraft/server/level/ServerChunkCache.java
-@@ -185,6 +185,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -182,6 +182,8 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         }
      }
      // Paper end - chunk tick iteration optimisations
- 
 +    public boolean firstRunSpawnCounts = true; // Pufferfish
 +    public final java.util.concurrent.atomic.AtomicBoolean _pufferfish_spawnCountsReady = new java.util.concurrent.atomic.AtomicBoolean(false); // Pufferfish - optimize countmobs
  
+ 
      public ServerChunkCache(
-         ServerLevel level,
-@@ -517,6 +519,43 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -511,6 +513,43 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
              this.broadcastChangedChunks(profilerFiller);
              profilerFiller.pop();
          }
@@ -97,7 +97,7 @@ index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595ef
      }
  
      private void broadcastChangedChunks(ProfilerFiller profiler) {
-@@ -539,6 +578,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -533,6 +572,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
          // Paper start - Optional per player mob spawns
          NaturalSpawner.SpawnState spawnState;
          if ((this.spawnFriendlies || this.spawnEnemies) && this.level.paperConfig().entities.spawning.perPlayerMobSpawns) { // don't count mobs when animals and monsters are disabled
@@ -105,7 +105,7 @@ index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595ef
              // re-set mob counts
              for (ServerPlayer player : this.level.players) {
                  // Paper start - per player mob spawning backoff
-@@ -553,12 +593,17 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -547,12 +587,17 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
                  }
                  // Paper end - per player mob spawning backoff
              }
@@ -123,19 +123,19 @@ index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595ef
          // Paper end - Optional per player mob spawns
 -        this.lastSpawnState = spawnState;
 +        // this.lastSpawnState = spawnState; // Pufferfish - this is managed asynchronously
-         boolean _boolean = this.level.getGameRules().getBoolean(GameRules.RULE_DOMOBSPAWNING) && !this.level.players().isEmpty(); // CraftBukkit
-         int _int = this.level.getGameRules().getInt(GameRules.RULE_RANDOMTICKING);
+         boolean flag = this.level.getGameRules().get(GameRules.SPAWN_MOBS) && !this.level.players().isEmpty(); // CraftBukkit
+         int i = this.level.getGameRules().get(GameRules.RANDOM_TICK_SPEED);
          List<MobCategory> filteredSpawningCategories;
-@@ -572,7 +617,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -566,7 +611,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
              }
              // Paper end - PlayerNaturallySpawnCreaturesEvent
-             boolean flag = this.level.ticksPerSpawnCategory.getLong(org.bukkit.entity.SpawnCategory.ANIMAL) != 0L && this.level.getLevelData().getGameTime() % this.level.ticksPerSpawnCategory.getLong(org.bukkit.entity.SpawnCategory.ANIMAL) == 0L; // CraftBukkit
--            filteredSpawningCategories = NaturalSpawner.getFilteredSpawningCategories(spawnState, this.spawnFriendlies, this.spawnEnemies, flag, this.level); // CraftBukkit
-+            filteredSpawningCategories = NaturalSpawner.getFilteredSpawningCategories(lastSpawnState, this.spawnFriendlies, this.spawnEnemies, flag, this.level); // CraftBukkit // Pufferfish
+             boolean flag1 = this.level.ticksPerSpawnCategory.getLong(org.bukkit.entity.SpawnCategory.ANIMAL) != 0L && this.level.getGameTime() % this.level.ticksPerSpawnCategory.getLong(org.bukkit.entity.SpawnCategory.ANIMAL) == 0L; // CraftBukkit
+-            filteredSpawningCategories = NaturalSpawner.getFilteredSpawningCategories(spawnState, this.spawnFriendlies, this.spawnEnemies, flag1, this.level); // CraftBukkit
++            filteredSpawningCategories = NaturalSpawner.getFilteredSpawningCategories(lastSpawnState, this.spawnFriendlies, this.spawnEnemies, flag1, this.level); // CraftBukkit // Pufferfish
          } else {
              filteredSpawningCategories = List.of();
          }
-@@ -590,7 +635,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -584,7 +629,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
              profiler.popPush("tickSpawningChunks");
  
              for (LevelChunk levelChunk : list) {
@@ -144,7 +144,7 @@ index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595ef
              }
          } finally {
              list.clear();
-@@ -615,7 +660,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+@@ -609,7 +654,7 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
  
          if (!spawnCategories.isEmpty()) {
              if (this.level.getWorldBorder().isWithinBounds(pos)) { // Paper - rewrite chunk system
@@ -154,11 +154,11 @@ index 488fc6088d69148f60a913b42ffb964c48eb0324..214e72e94f1cdf34fa911e712cd595ef
          }
      }
 diff --git a/net/minecraft/world/level/entity/EntityTickList.java b/net/minecraft/world/level/entity/EntityTickList.java
-index 423779a2b690f387a4f0bd07b97b50e0baefda76..dec51066fc3f57b7bdc56195313c219f45a7fbee 100644
+index 79a34ce6c888a611115719412d9a9bbcc0be498a..ce70bd4f6aeed185a67f6c7537eda41d40e80cb1 100644
 --- a/net/minecraft/world/level/entity/EntityTickList.java
 +++ b/net/minecraft/world/level/entity/EntityTickList.java
-@@ -9,7 +9,7 @@ import javax.annotation.Nullable;
- import net.minecraft.world.entity.Entity;
+@@ -9,7 +9,7 @@ import net.minecraft.world.entity.Entity;
+ import org.jspecify.annotations.Nullable;
  
  public class EntityTickList {
 -    private final ca.spottedleaf.moonrise.common.list.IteratorSafeOrderedReferenceSet<net.minecraft.world.entity.Entity> entities = new ca.spottedleaf.moonrise.common.list.IteratorSafeOrderedReferenceSet<>(); // Paper - rewrite chunk system

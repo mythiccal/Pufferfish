@@ -1,6 +1,14 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
-@@ -23,6 +23,17 @@ paperweight {
+@@ -2,6 +2,7 @@
+ import io.papermc.paperweight.attribute.DevBundleOutput
+ import io.papermc.paperweight.util.*
+ import java.time.Instant
++import org.gradle.api.component.SoftwareComponentFactory
+ 
+ plugins {
+     `java-library`
+@@ -22,6 +23,17 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
  
@@ -11,14 +19,58 @@
 +            patchesDir = rootDirectory.dir("pufferfish-server/paper-patches")
 +            outputDir = rootDirectory.dir("paper-server")
 +        }
-+     }
++    }
 +
 +    activeFork = pufferfish
 +
      spigot {
-         enabled = true
+         enabled = false
          buildDataRef = "42d18d4c4653ffc549778dbe223f6994a031d69e"
-@@ -104,7 +115,20 @@ if (project.providers.gradleProperty("publishDevBundle").isPresent) {
+@@ -55,36 +67,35 @@
+ abstract class Services {
+     @get:Inject
+     abstract val archiveOperations: ArchiveOperations
++
++    @get:Inject
++    abstract val softwareComponentFactory: SoftwareComponentFactory
+ }
+ val services = objects.newInstance<Services>()
+ 
+ if (project.providers.gradleProperty("publishDevBundle").isPresent) {
+-    val devBundleComponent = publishing.softwareComponentFactory.adhoc("devBundle")
++    val devBundleComponent = services.softwareComponentFactory.adhoc("devBundle")
+     components.add(devBundleComponent)
+ 
+     val devBundle = configurations.consumable("devBundle") {
+         attributes.attribute(DevBundleOutput.ATTRIBUTE, objects.named(DevBundleOutput.ZIP))
+         outgoing.artifact(tasks.generateDevelopmentBundle.flatMap { it.devBundleFile })
+     }
+-    devBundleComponent.addVariantsFromConfiguration(devBundle) {}
++    devBundleComponent.addVariantsFromConfiguration(devBundle.get()) {}
+ 
+     val runtime = configurations.consumable("serverRuntimeClasspath") {
+         attributes.attribute(DevBundleOutput.ATTRIBUTE, objects.named(DevBundleOutput.SERVER_DEPENDENCIES))
+         attributes.attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+         extendsFrom(configurations.runtimeClasspath.get())
+     }
+-    devBundleComponent.addVariantsFromConfiguration(runtime) {
+-        mapToMavenScope("runtime")
+-    }
++    devBundleComponent.addVariantsFromConfiguration(runtime.get()) {}
+ 
+     val compile = configurations.consumable("serverCompileClasspath") {
+         attributes.attribute(DevBundleOutput.ATTRIBUTE, objects.named(DevBundleOutput.SERVER_DEPENDENCIES))
+         attributes.attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_API))
+         extendsFrom(configurations.compileClasspath.get())
+     }
+-    devBundleComponent.addVariantsFromConfiguration(compile) {
+-        mapToMavenScope("compile")
+-    }
++    devBundleComponent.addVariantsFromConfiguration(compile.get()) {}
+ 
+     tasks.withType(GenerateMavenPom::class).configureEach {
+         doLast {
+@@ -104,7 +115,20 @@
      }
  }
  
@@ -40,7 +92,7 @@
  configurations.named(log4jPlugins.compileClasspathConfigurationName) {
      extendsFrom(configurations.compileClasspath.get())
  }
-@@ -127,7 +151,7 @@ abstract class MockitoAgentProvider : CommandLineArgumentProvider {
+@@ -127,7 +151,7 @@
  }
  
  dependencies {
@@ -49,22 +101,22 @@
      implementation("ca.spottedleaf:concurrentutil:0.0.7")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -162,6 +186,14 @@ dependencies {
-         isTransitive = false // includes junit
-     }
+@@ -153,6 +177,14 @@
+     implementation("org.ow2.asm:asm-commons:9.8")
+     implementation("org.spongepowered:configurate-yaml:4.2.0")
  
 +    // Pufferfish start - config
 +    implementation("org.yaml:snakeyaml:1.32")
-+    implementation ("me.carleslc.Simple-YAML:Simple-Yaml:1.8.4") {
-+        exclude(group="org.yaml", module="snakeyaml")
++    implementation("me.carleslc.Simple-YAML:Simple-Yaml:1.8.4") {
++        exclude(group = "org.yaml", module = "snakeyaml")
 +    }
 +    // Pufferfish end
 +    implementation("com.github.technove:Flare:34637f3f87") // Pufferfish - flare
 +
-     testImplementation("io.github.classgraph:classgraph:4.8.179") // For mob goal test
-     testImplementation("org.junit.jupiter:junit-jupiter:5.12.2")
-     testImplementation("org.junit.platform:junit-platform-suite-engine:1.12.2")
-@@ -185,6 +217,13 @@ dependencies {
+     // Deps that were previously in the API but have now been moved here for backwards compat, eventually to be removed
+     runtimeOnly("commons-lang:commons-lang:2.6")
+     runtimeOnly("org.xerial:sqlite-jdbc:3.49.1.0")
+@@ -186,6 +218,13 @@
      implementation("me.lucko:spark-paper:1.10.152")
  }
  
@@ -78,7 +130,7 @@
  tasks.jar {
      manifest {
          val git = Git(rootProject.layout.projectDirectory.path)
-@@ -197,14 +236,14 @@ tasks.jar {
+@@ -198,14 +237,14 @@
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
              "Main-Class" to "org.bukkit.craftbukkit.Main",
@@ -98,7 +150,7 @@
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
-@@ -263,7 +302,7 @@ tasks.test {
+@@ -264,7 +303,7 @@
      jvmArgumentProviders.add(provider)
  }
  

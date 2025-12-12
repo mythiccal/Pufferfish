@@ -5,10 +5,10 @@ Subject: [PATCH] Reduce entity allocations
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 583c0a460e01dd24963ad3345d52b269d0bc98c7..d15cbdf431ff8a22541356e051e70a0ad02335ae 100644
+index f6acafe7faade969443559df285fbb84f0a59dab..d2885cdd659dfc3c7b59ebea343571ef75f4189e 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -367,6 +367,7 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
+@@ -368,6 +368,7 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
      private final int despawnTime; // Paper - entity despawn time limit
      public boolean activatedPriorityReset = false; // Pufferfish - DAB
      public int activatedPriority = gg.pufferfish.pufferfish.PufferfishConfig.maximumActivationPrio; // Pufferfish - DAB (golf score)
@@ -17,7 +17,7 @@ index 583c0a460e01dd24963ad3345d52b269d0bc98c7..d15cbdf431ff8a22541356e051e70a0a
      public final io.papermc.paper.entity.activation.ActivationType activationType = io.papermc.paper.entity.activation.ActivationType.activationTypeFor(this); // Paper - EAR 2/tracking ranges
      // Paper start - EAR 2
 diff --git a/net/minecraft/world/entity/ai/attributes/AttributeMap.java b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
-index fdb02fc40579866167e8cc9bcefbd961588b53a6..53783c5b7d978f3210bb65b45549ac18b8edef09 100644
+index 92b7f4cbd276dad49cba78514db3552af8cdd80c..117b0f0a6ecb7ae11f5567a507c20dc9cabac559 100644
 --- a/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 +++ b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 @@ -18,9 +18,11 @@ public class AttributeMap {
@@ -32,13 +32,12 @@ index fdb02fc40579866167e8cc9bcefbd961588b53a6..53783c5b7d978f3210bb65b45549ac18
      }
  
      private void onAttributeModified(AttributeInstance instance) {
-@@ -42,9 +44,10 @@ public class AttributeMap {
+@@ -42,8 +44,9 @@ public class AttributeMap {
          return this.attributes.values().stream().filter(instance -> instance.getAttribute().value().isClientSyncable()).collect(Collectors.toList());
      }
  
-+
-     @Nullable
-     public AttributeInstance getInstance(Holder<Attribute> attribute) {
++    // Pufferfish start - reduce entity allocations
+     public @Nullable AttributeInstance getInstance(Holder<Attribute> attribute) {
 -        return this.attributes.computeIfAbsent(attribute, holder -> this.supplier.createInstance(this::onAttributeModified, (Holder<Attribute>)holder));
 +        return this.attributes.computeIfAbsent(attribute, createInstance);
      }

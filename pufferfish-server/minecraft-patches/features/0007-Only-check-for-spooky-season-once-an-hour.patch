@@ -19,30 +19,27 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-diff --git a/net/minecraft/world/entity/ambient/Bat.java b/net/minecraft/world/entity/ambient/Bat.java
-index c0198c0b6d00667c9591a5cd254b0bfedc3fb627..dbd9c9aecd5a6dbf93ab038436600f067e980bc7 100644
---- a/net/minecraft/world/entity/ambient/Bat.java
-+++ b/net/minecraft/world/entity/ambient/Bat.java
-@@ -246,12 +246,21 @@ public class Bat extends AmbientCreature {
-         }
+diff --git a/net/minecraft/util/SpecialDates.java b/net/minecraft/util/SpecialDates.java
+index a6018d9fba0957fc721cebc9f366767fa04d4950..b84d08d4689a40e2892e069628db141020978e4c 100644
+--- a/net/minecraft/util/SpecialDates.java
++++ b/net/minecraft/util/SpecialDates.java
+@@ -17,9 +17,18 @@ public class SpecialDates {
+         return MonthDay.from(ZonedDateTime.now());
      }
  
 +    // Pufferfish start - only check for spooky season once an hour
 +    private static boolean isSpookySeason = false;
 +    private static final int ONE_HOUR = 20 * 60 * 60;
 +    private static int lastSpookyCheck = -ONE_HOUR;
-     private static boolean isHalloween() {
+     public static boolean isHalloween() {
+-        return HALLOWEEN.equals(dayNow());
 +        if (net.minecraft.server.MinecraftServer.currentTick - lastSpookyCheck > ONE_HOUR) {
-         LocalDate localDate = LocalDate.now();
-         int i = localDate.get(ChronoField.DAY_OF_MONTH);
-         int i1 = localDate.get(ChronoField.MONTH_OF_YEAR);
--        return i1 == 10 && i >= 20 || i1 == 11 && i <= 3;
-+        isSpookySeason = i1 == 10 && i >= 20 || i1 == 11 && i <= 3;
-+        lastSpookyCheck = net.minecraft.server.MinecraftServer.currentTick;
++            isSpookySeason = HALLOWEEN.equals(dayNow());
++            lastSpookyCheck = net.minecraft.server.MinecraftServer.currentTick;
 +        }
 +        return isSpookySeason;
      }
 +    // Pufferfish end
  
-     private void setupAnimationStates() {
-         if (this.isResting()) {
+     public static boolean isExtendedChristmas() {
+         return CHRISTMAS_RANGE.contains(dayNow());

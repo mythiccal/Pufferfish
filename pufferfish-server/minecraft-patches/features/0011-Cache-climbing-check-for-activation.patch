@@ -5,7 +5,7 @@ Subject: [PATCH] Cache climbing check for activation
 
 
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index 46c03573fdc0b6bb008428310da01d0864e8b1ec..46e30a1c94fc7dec2493128c77f5f064b55fccba 100644
+index cabb76cdac554bc0d79222079418f70a93feedb6..0a70e6dd6f543db0b94da925018ed951f6fbae7d 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
 @@ -240,7 +240,7 @@ public final class ActivationRange {
@@ -18,10 +18,10 @@ index 46c03573fdc0b6bb008428310da01d0864e8b1ec..46e30a1c94fc7dec2493128c77f5f064
              }
              if (entity instanceof final Mob mob && mob.getTarget() != null) {
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 896e05fc7f1d50f3d94e2cb7ce211dc4e1633e1a..ed9e5120ad3d3d10cf1cea5794640589a78ba917 100644
+index 441f70346bdd9da5aace8dfcc1e4ea5efb850b3f..305dbd4d8972a03bdc45d8bd5ca35a1a64700b4d 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -2171,6 +2171,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -2174,6 +2174,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          return this.lastClimbablePos;
      }
  

@@ -27,7 +27,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index ae2bb9a73106febfe5f0d090abd4252bbb5fd27e..46c03573fdc0b6bb008428310da01d0864e8b1ec 100644
+index c18823746ab2edcab536cb1589b7720e3af07e0f..cabb76cdac554bc0d79222079418f70a93feedb6 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
 @@ -39,6 +39,7 @@ import net.minecraft.world.phys.AABB;
@@ -78,10 +78,10 @@ index ae2bb9a73106febfe5f0d090abd4252bbb5fd27e..46c03573fdc0b6bb008428310da01d08
              }
          }
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 5cca28cb4536023da5feff97ab2e8f65133373f8..ca4d5eceb3865c0af70f965abf0e47f1a5a42ecc 100644
+index 8db57a523422f1762bd758704ebbbf750e9f6dbe..296d139706970da30b60c7186755a95db642c403 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -820,6 +820,7 @@ public class ServerLevel extends Level implements ServerEntityGetter, WorldGenLe
+@@ -835,6 +835,7 @@ public class ServerLevel extends Level implements ServerEntityGetter, WorldGenLe
              this.entityTickList
                  .forEach(
                      entity -> {
@@ -90,10 +90,10 @@ index 5cca28cb4536023da5feff97ab2e8f65133373f8..ca4d5eceb3865c0af70f965abf0e47f1
                              if (!tickRateManager.isEntityFrozen(entity)) {
                                  profilerFiller.push("checkDespawn");
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 2e3e038874757049445a91bf590d5a1a427a3f6d..583c0a460e01dd24963ad3345d52b269d0bc98c7 100644
+index ad4322950726f86e250927f097a4214ed25ddce0..f6acafe7faade969443559df285fbb84f0a59dab 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -365,6 +365,8 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
+@@ -366,6 +366,8 @@ public abstract class Entity implements SyncedDataHolder, DebugValueSource, Name
      public boolean freezeLocked = false; // Paper - Freeze Tick Lock API
      public boolean fixedPose = false; // Paper - Expand Pose API
      private final int despawnTime; // Paper - entity despawn time limit
@@ -103,19 +103,19 @@ index 2e3e038874757049445a91bf590d5a1a427a3f6d..583c0a460e01dd24963ad3345d52b269
      public final io.papermc.paper.entity.activation.ActivationType activationType = io.papermc.paper.entity.activation.ActivationType.activationTypeFor(this); // Paper - EAR 2/tracking ranges
      // Paper start - EAR 2
 diff --git a/net/minecraft/world/entity/EntityType.java b/net/minecraft/world/entity/EntityType.java
-index 4706a41ecaccd20fc623ce64858b160204f60f9e..6c65b1fcae5cbfd32802ae94effa492f1e37cf73 100644
+index abccad13c2bb3a33e98ad8eb6d7f08c0ef021811..a5daa92563c6ecd009375c980e8d3413cf006d90 100644
 --- a/net/minecraft/world/entity/EntityType.java
 +++ b/net/minecraft/world/entity/EntityType.java
-@@ -1194,6 +1194,7 @@ public class EntityType<T extends Entity> implements FeatureElement, EntityTypeT
+@@ -1221,6 +1221,7 @@ public class EntityType<T extends Entity> implements FeatureElement, EntityTypeT
      private final int clientTrackingRange;
      private final int updateInterval;
      private final String descriptionId;
 +    public boolean dabEnabled = false; // Pufferfish
-     @Nullable
-     private Component description;
+     private @Nullable Component description;
      private final Optional<ResourceKey<LootTable>> lootTable;
+     private final EntityDimensions dimensions;
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index f2a321d94ddc9247a3820d42f4a04290ea3ce6f6..e1eda6017a1e9abaf7e3b70dcc36e1ef372deb19 100644
+index a6ed274cb0cf86a1ca93588f946ed52a58354546..9ccb2cbb41db620ac702b5089d5d8df30f6e6086 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
 @@ -221,10 +221,10 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Leashab
@@ -131,7 +131,7 @@ index f2a321d94ddc9247a3820d42f4a04290ea3ce6f6..e1eda6017a1e9abaf7e3b70dcc36e1ef
              this.targetSelector.tick();
          }
      }
-@@ -772,16 +772,20 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Leashab
+@@ -810,16 +810,20 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Leashab
          int i = this.tickCount + this.getId();
          if (i % 2 != 0 && this.tickCount > 1) {
              profilerFiller.push("targetSelector");
@@ -153,7 +153,7 @@ index f2a321d94ddc9247a3820d42f4a04290ea3ce6f6..e1eda6017a1e9abaf7e3b70dcc36e1ef
              profilerFiller.pop();
          }
 diff --git a/net/minecraft/world/entity/ai/behavior/VillagerPanicTrigger.java b/net/minecraft/world/entity/ai/behavior/VillagerPanicTrigger.java
-index f6c673b1abe53afcb14fd68d590431027ed29f67..21deb221b87ecb70c8a0dc963ab79124b26ac930 100644
+index 389f773e22872778fc434ad47f3a983b490a0284..06790f6646e721a23dbd6effbc428b76a073ae2e 100644
 --- a/net/minecraft/world/entity/ai/behavior/VillagerPanicTrigger.java
 +++ b/net/minecraft/world/entity/ai/behavior/VillagerPanicTrigger.java
 @@ -36,7 +36,11 @@ public class VillagerPanicTrigger extends Behavior<Villager> {
@@ -189,10 +189,10 @@ index 859b859d29b637200cf7c9a0bd52d9f712413e3d..6b7c619a255aea1a2e7432fb60f9b2c0
  
      public boolean hasTasks() {
 diff --git a/net/minecraft/world/entity/animal/allay/Allay.java b/net/minecraft/world/entity/animal/allay/Allay.java
-index f0dc6dfa78da497aa9a7a021e71f8be397016a93..a8c67a95f771c35cdb2a7181341677bb0f5fa4ce 100644
+index 0591dc9c39f94768c5ebf74cad7bae98921ff66c..2f1d771c3d8cccf20846effbfc49288f61afb62d 100644
 --- a/net/minecraft/world/entity/animal/allay/Allay.java
 +++ b/net/minecraft/world/entity/animal/allay/Allay.java
-@@ -224,10 +224,12 @@ public class Allay extends PathfinderMob implements InventoryCarrier, VibrationS
+@@ -223,10 +223,12 @@ public class Allay extends PathfinderMob implements InventoryCarrier, VibrationS
          return 0.4F;
      }
  
@@ -206,10 +206,10 @@ index f0dc6dfa78da497aa9a7a021e71f8be397016a93..a8c67a95f771c35cdb2a7181341677bb
          profilerFiller.pop();
          profilerFiller.push("allayActivityUpdate");
 diff --git a/net/minecraft/world/entity/animal/axolotl/Axolotl.java b/net/minecraft/world/entity/animal/axolotl/Axolotl.java
-index e40bb3232de7ae3a9b9490ec9eb41256ae25ea12..68059074c6cc77dd5e31d67a0bdd9a2848e74ae1 100644
+index 2e5291af79a04ff7ebfc533596a008b404571214..98798713117f3256aac349bb90e0b7d2902d086b 100644
 --- a/net/minecraft/world/entity/animal/axolotl/Axolotl.java
 +++ b/net/minecraft/world/entity/animal/axolotl/Axolotl.java
-@@ -326,10 +326,12 @@ public class Axolotl extends Animal implements Bucketable {
+@@ -324,10 +324,12 @@ public class Axolotl extends Animal implements Bucketable {
          return true;
      }
  
@@ -223,10 +223,10 @@ index e40bb3232de7ae3a9b9490ec9eb41256ae25ea12..68059074c6cc77dd5e31d67a0bdd9a28
          profilerFiller.pop();
          profilerFiller.push("axolotlActivityUpdate");
 diff --git a/net/minecraft/world/entity/animal/frog/Frog.java b/net/minecraft/world/entity/animal/frog/Frog.java
-index f14e79bd8902dc17b63e124cfa44db9e60a42934..e1483067854892153bbb18c360053238eb8c0f8e 100644
+index 09d817aa34d4a6d8a49d614087f9942d75e673e8..2ae42747b6f340563f82c0b1e477a500a9a11cfc 100644
 --- a/net/minecraft/world/entity/animal/frog/Frog.java
 +++ b/net/minecraft/world/entity/animal/frog/Frog.java
-@@ -201,10 +201,12 @@ public class Frog extends Animal {
+@@ -200,10 +200,12 @@ public class Frog extends Animal {
          VariantUtils.readVariant(input, Registries.FROG_VARIANT).ifPresent(this::setVariant);
      }
  
@@ -240,7 +240,7 @@ index f14e79bd8902dc17b63e124cfa44db9e60a42934..e1483067854892153bbb18c360053238
          profilerFiller.pop();
          profilerFiller.push("frogActivityUpdate");
 diff --git a/net/minecraft/world/entity/animal/frog/Tadpole.java b/net/minecraft/world/entity/animal/frog/Tadpole.java
-index 3ce172c1bdaf8b8a8ad774dd37498e8e379c68bb..126e8b6c35b2c57010a4d9c170b8561d5cee45a4 100644
+index f65cfb908aac16e6df4d209c6b5c3ee5065289d3..5bca2063c39540b28c6bf968a7f08b36b0b466bf 100644
 --- a/net/minecraft/world/entity/animal/frog/Tadpole.java
 +++ b/net/minecraft/world/entity/animal/frog/Tadpole.java
 @@ -97,10 +97,12 @@ public class Tadpole extends AbstractFish {
@@ -257,10 +257,10 @@ index 3ce172c1bdaf8b8a8ad774dd37498e8e379c68bb..126e8b6c35b2c57010a4d9c170b8561d
          profilerFiller.pop();
          profilerFiller.push("tadpoleActivityUpdate");
 diff --git a/net/minecraft/world/entity/animal/goat/Goat.java b/net/minecraft/world/entity/animal/goat/Goat.java
-index 7549be3f72beb31ce20cbac96f4909368d877067..98c35024f506bc067a2bc76af150dcc7012b0ab5 100644
+index 9f41c1ff3e75cf9164dee0853aeef4bfc473126b..dde546f3f1f17d9eee972b905e425540593f1205 100644
 --- a/net/minecraft/world/entity/animal/goat/Goat.java
 +++ b/net/minecraft/world/entity/animal/goat/Goat.java
-@@ -188,10 +188,12 @@ public class Goat extends Animal {
+@@ -187,10 +187,12 @@ public class Goat extends Animal {
          return (Brain<Goat>)super.getBrain();
      }
  
@@ -274,10 +274,10 @@ index 7549be3f72beb31ce20cbac96f4909368d877067..98c35024f506bc067a2bc76af150dcc7
          profilerFiller.pop();
          profilerFiller.push("goatActivityUpdate");
 diff --git a/net/minecraft/world/entity/monster/hoglin/Hoglin.java b/net/minecraft/world/entity/monster/hoglin/Hoglin.java
-index a60f40c7986bbcec854df490bd66111a79fc635a..1d41c05fbed3745c5e593baa858a5830d5c61ee0 100644
+index 330d831abb22aba9f6f60c0174769a0e78411dfd..5f0d5d4a1dcb0e30f3e30c4f061a258d17332e7a 100644
 --- a/net/minecraft/world/entity/monster/hoglin/Hoglin.java
 +++ b/net/minecraft/world/entity/monster/hoglin/Hoglin.java
-@@ -160,10 +160,12 @@ public class Hoglin extends Animal implements Enemy, HoglinBase {
+@@ -161,10 +161,12 @@ public class Hoglin extends Animal implements Enemy, HoglinBase {
          return (Brain<Hoglin>)super.getBrain();
      }
  
@@ -291,10 +291,10 @@ index a60f40c7986bbcec854df490bd66111a79fc635a..1d41c05fbed3745c5e593baa858a5830
          profilerFiller.pop();
          HoglinAi.updateActivity(this);
 diff --git a/net/minecraft/world/entity/monster/piglin/Piglin.java b/net/minecraft/world/entity/monster/piglin/Piglin.java
-index fbbf7364b07ea49116dd86fa9722fa341978bc19..805562a45f4a43d74a15a2d47e249ff0f9cbae0f 100644
+index 2497779f96e3b6c7e7aa048c2047c04f06cb7ede..51516f9c9797682ff3b6b7f7a2c92ce933e850d2 100644
 --- a/net/minecraft/world/entity/monster/piglin/Piglin.java
 +++ b/net/minecraft/world/entity/monster/piglin/Piglin.java
-@@ -306,10 +306,12 @@ public class Piglin extends AbstractPiglin implements CrossbowAttackMob, Invento
+@@ -310,10 +310,12 @@ public class Piglin extends AbstractPiglin implements CrossbowAttackMob, Invento
          return !this.cannotHunt;
      }
  
@@ -308,10 +308,10 @@ index fbbf7364b07ea49116dd86fa9722fa341978bc19..805562a45f4a43d74a15a2d47e249ff0
          profilerFiller.pop();
          PiglinAi.updateActivity(this);
 diff --git a/net/minecraft/world/entity/monster/warden/Warden.java b/net/minecraft/world/entity/monster/warden/Warden.java
-index 2383f3fbe06f6b9a663798deb75ee75eacacf788..ffbd0e0af6bcf29ae3dc4d0b178e6d9ce2897e1a 100644
+index 3b931c6105ea14add0d2a60dc19cc3601a092a3b..44bd2379980da5c3bf8904f97c97f63abf4f480e 100644
 --- a/net/minecraft/world/entity/monster/warden/Warden.java
 +++ b/net/minecraft/world/entity/monster/warden/Warden.java
-@@ -277,10 +277,12 @@ public class Warden extends Monster implements VibrationSystem {
+@@ -276,10 +276,12 @@ public class Warden extends Monster implements VibrationSystem {
          }
      }
  
@@ -324,10 +324,10 @@ index 2383f3fbe06f6b9a663798deb75ee75eacacf788..ffbd0e0af6bcf29ae3dc4d0b178e6d9c
          this.getBrain().tick(level, this);
          profilerFiller.pop();
          super.customServerAiStep(level);
-diff --git a/net/minecraft/world/entity/npc/Villager.java b/net/minecraft/world/entity/npc/Villager.java
-index d10a407bef7da29a24582e48d8ee599c981384c5..88895272c5186caa883f70414095e91009d088c6 100644
---- a/net/minecraft/world/entity/npc/Villager.java
-+++ b/net/minecraft/world/entity/npc/Villager.java
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index 89844d7e804cc8a2110b694e448bc5993991bea7..6ed479713a7a7616513064b837dc5e834b174a83 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
 @@ -288,6 +288,8 @@ public class Villager extends AbstractVillager implements ReputationEventHandler
      }
      // Paper end - EAR 2

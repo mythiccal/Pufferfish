@@ -5,10 +5,10 @@ Subject: [PATCH] Pufferfish Config and Command
 
 
 diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
-index 354b48c88b113c4048e258f2402aad2647d3c364..44b731da23936642faf4ae18e25d9a251ab75c94 100644
+index eb06d8f012684845146429832e977e6c1ddcd62b..189eef1feb66394037abc2bef2fe57e7a65d0c36 100644
 --- a/net/minecraft/server/dedicated/DedicatedServer.java
 +++ b/net/minecraft/server/dedicated/DedicatedServer.java
-@@ -277,6 +277,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+@@ -274,6 +274,8 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
          this.server.spark.registerCommandBeforePlugins(this.server); // Paper - spark
          com.destroystokyo.paper.Metrics.PaperMetrics.startMetrics(); // Paper - start metrics
          com.destroystokyo.paper.VersionHistoryManager.INSTANCE.getClass(); // Paper - load version history now
