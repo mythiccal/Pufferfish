@@ -24,32 +24,52 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 diff --git a/net/minecraft/world/item/crafting/ShapelessRecipe.java b/net/minecraft/world/item/crafting/ShapelessRecipe.java
-index 28d085fce206634ee88c492e06fdbf63a618ee12..368cb78893ae4fac7fa0aad116818c5cc8e8ae86 100644
+index d4d4fad66be0f0c0225993026602dc61e10c6bce..42c673e07f254f1c3d15539fc2da22432490739d 100644
 --- a/net/minecraft/world/item/crafting/ShapelessRecipe.java
 +++ b/net/minecraft/world/item/crafting/ShapelessRecipe.java
-@@ -22,8 +22,13 @@ public class ShapelessRecipe implements CraftingRecipe {
-     final ItemStack result;
-     final List<Ingredient> ingredients;
-     private @Nullable PlacementInfo placementInfo;
+@@ -2,6 +2,7 @@
+ 
+ import com.mojang.serialization.MapCodec;
+ import com.mojang.serialization.codecs.RecordCodecBuilder;
++import com.google.common.collect.Lists; // Pufferfish
+ import java.util.List;
+ import net.minecraft.network.RegistryFriendlyByteBuf;
+ import net.minecraft.network.codec.ByteBufCodecs;
+@@ -38,14 +39,24 @@ public class ShapelessRecipe extends NormalCraftingRecipe {
+     public static final RecipeSerializer<ShapelessRecipe> SERIALIZER = new RecipeSerializer<>(MAP_CODEC, STREAM_CODEC);
+     private final ItemStackTemplate result;
+     private final List<Ingredient> ingredients;
 +    private final boolean isBukkit; // Pufferfish
  
 +    // Pufferfish start
-     public ShapelessRecipe(String group, CraftingBookCategory category, ItemStack result, List<Ingredient> ingredients) {
-+        this(group, category, result, ingredients, false);
+     public ShapelessRecipe(
+         final Recipe.CommonInfo commonInfo, final CraftingRecipe.CraftingBookInfo bookInfo, final ItemStackTemplate result, final List<Ingredient> ingredients
+     ) {
++        this(commonInfo, bookInfo, result, ingredients, false);
 +    }
-+    public ShapelessRecipe(String group, CraftingBookCategory category, ItemStack result, List<Ingredient> ingredients, boolean isBukkit) { this.isBukkit = isBukkit; // Pufferfish end
-         this.group = group;
-         this.category = category;
++
++    public ShapelessRecipe(
++        final Recipe.CommonInfo commonInfo, final CraftingRecipe.CraftingBookInfo bookInfo, final ItemStackTemplate result, final List<Ingredient> ingredients, final boolean isBukkit
++    ) {
+         super(commonInfo, bookInfo);
          this.result = result;
-@@ -71,6 +76,28 @@ public class ShapelessRecipe implements CraftingRecipe {
+         this.ingredients = ingredients;
++        this.isBukkit = isBukkit;
+     }
++    // Pufferfish end
+ 
+     // CraftBukkit start
+     @Override
+@@ -74,6 +85,29 @@ public class ShapelessRecipe extends NormalCraftingRecipe {
  
      @Override
-     public boolean matches(CraftingInput input, Level level) {
+     public boolean matches(final CraftingInput input, final Level level) {
 +        // Pufferfish start
 +        if (!this.isBukkit) {
-+            java.util.List<Ingredient> ingredients = com.google.common.collect.Lists.newArrayList(this.ingredients.toArray(new Ingredient[0]));
++            List<Ingredient> ingredients = Lists.newArrayList(this.ingredients);
 +
-+            inventory: for (int index = 0; index < input.size(); index++) {
++            inventory:
++            for (int index = 0; index < input.size(); index++) {
 +                ItemStack itemStack = input.getItem(index);
 +
 +                if (!itemStack.isEmpty()) {
@@ -67,6 +87,6 @@ index 28d085fce206634ee88c492e06fdbf63a618ee12..368cb78893ae4fac7fa0aad116818c5c
 +        }
 +        // Pufferfish end
 +
-         // Paper start - Improve exact choice recipe ingredients & unwrap ternary
          if (input.ingredientCount() != this.ingredients.size()) {
              return false;
+         } else {

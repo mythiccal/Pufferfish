@@ -9,15 +9,15 @@ search to attempt respawning the ender dragon whenever a player places
 an end crystal.
 
 diff --git a/net/minecraft/world/item/EndCrystalItem.java b/net/minecraft/world/item/EndCrystalItem.java
-index 05ec512839898f96d9769bb0d00f6ba11dda0c4b..37a1531d57cc7da0e9c914301787be45799677e4 100644
+index 1eca60c5a3e1eeb6f44edbb81fe1af011edd8732..ba294a6477cc419f09471a86695e072c7cbb9c06 100644
 --- a/net/minecraft/world/item/EndCrystalItem.java
 +++ b/net/minecraft/world/item/EndCrystalItem.java
 @@ -50,7 +50,7 @@ public class EndCrystalItem extends Item {
-                         level.addFreshEntity(endCrystal);
-                         level.gameEvent(context.getPlayer(), GameEvent.ENTITY_PLACE, blockPos);
-                         EndDragonFight dragonFight = ((ServerLevel)level).getDragonFight();
--                        if (dragonFight != null) {
-+                        if (dragonFight != null && gg.pufferfish.pufferfish.PufferfishConfig.allowEndCrystalRespawn) { // Pufferfish
-                             dragonFight.tryRespawn(aboveBlockPos); // Paper - Perf: Do crystal-portal proximity check before entity lookup
+                         level.addFreshEntity(crystal);
+                         level.gameEvent(context.getPlayer(), GameEvent.ENTITY_PLACE, above);
+                         EnderDragonFight fight = ((ServerLevel)level).getDragonFight();
+-                        if (fight != null) {
++                        if (fight != null && gg.pufferfish.pufferfish.PufferfishConfig.allowEndCrystalRespawn) { // Pufferfish
+                             fight.tryRespawn(above); // Paper - Perf: Do crystal-portal proximity check before entity lookup
                          }
                      }

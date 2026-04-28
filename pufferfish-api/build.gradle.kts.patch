@@ -9,7 +9,7 @@
      // Deprecate bungeecord-chat in favor of adventure
      api("net.md-5:bungeecord-chat:$bungeeCordChatVersion") {
 @@ -91,7 +92,7 @@
-     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
  }
  
 -val generatedDir: java.nio.file.Path = layout.projectDirectory.dir("src/generated/java").asFile.toPath()
@@ -42,7 +42,7 @@
  tasks.jar {
      from(generateApiVersioningFile.flatMap { it.outputFile })
      manifest {
-@@ -216,11 +228,11 @@
+@@ -217,11 +229,11 @@
      }
  
      // workaround for https://github.com/gradle/gradle/issues/4046
@@ -56,7 +56,7 @@
                  include("**/doc-files/**")
              }
              into("build/docs/javadoc")
-@@ -235,6 +247,7 @@
+@@ -236,6 +248,7 @@
      val provider = objects.newInstance<MockitoAgentProvider>()
      provider.fileCollection.from(mockitoAgent)
      jvmArgumentProviders.add(provider)

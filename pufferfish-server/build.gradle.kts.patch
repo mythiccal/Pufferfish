@@ -1,14 +1,17 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
-@@ -2,6 +2,7 @@
+@@ -1,7 +1,10 @@
+ import io.papermc.fill.model.BuildChannel
  import io.papermc.paperweight.attribute.DevBundleOutput
++import io.papermc.paperweight.tasks.CreateBundlerJar
++import io.papermc.paperweight.tasks.CreatePaperclipJar
  import io.papermc.paperweight.util.*
  import java.time.Instant
 +import org.gradle.api.component.SoftwareComponentFactory
  
  plugins {
      `java-library`
-@@ -22,6 +23,17 @@
+@@ -22,6 +25,17 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
  
@@ -23,10 +26,10 @@
 +
 +    activeFork = pufferfish
 +
-     spigot {
-         enabled = true
-         buildDataRef = "17f77cee7117ab9d6175f088ae8962bfd04e61a9"
-@@ -55,36 +67,35 @@
+     updatingMinecraft {
+         // oldPaperCommit = "7e80cef5198561d0db53406127e5b8bc7af51577"
+     }
+@@ -37,36 +51,35 @@
  abstract class Services {
      @get:Inject
      abstract val archiveOperations: ArchiveOperations
@@ -70,7 +73,7 @@
  
      tasks.withType(GenerateMavenPom::class).configureEach {
          doLast {
-@@ -104,7 +115,20 @@
+@@ -86,7 +99,20 @@
      }
  }
  
@@ -92,17 +95,17 @@
  configurations.named(log4jPlugins.compileClasspathConfigurationName) {
      extendsFrom(configurations.compileClasspath.get())
  }
-@@ -127,7 +151,7 @@
+@@ -109,7 +135,7 @@
  }
  
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":pufferfish-api")) // Pufferfish
-     implementation("ca.spottedleaf:concurrentutil:0.0.8")
+     implementation("ca.spottedleaf:concurrentutil:0.0.10")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -153,6 +177,14 @@
-     implementation("org.ow2.asm:asm-commons:9.8")
+@@ -135,6 +161,14 @@
+     implementation("org.ow2.asm:asm-commons:9.9.1")
      implementation("org.spongepowered:configurate-yaml:4.2.0")
  
 +    // Pufferfish start - config
@@ -116,7 +119,7 @@
      // Deps that were previously in the API but have now been moved here for backwards compat, eventually to be removed
      runtimeOnly("commons-lang:commons-lang:2.6")
      runtimeOnly("org.xerial:sqlite-jdbc:3.49.1.0")
-@@ -186,6 +218,13 @@
+@@ -159,6 +193,13 @@
      implementation("me.lucko:spark-paper:1.10.152")
  }
  
@@ -130,7 +133,7 @@
  tasks.jar {
      manifest {
          val git = Git(rootProject.layout.projectDirectory.path)
-@@ -198,14 +237,14 @@
+@@ -171,14 +212,14 @@
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
              "Main-Class" to "org.bukkit.craftbukkit.Main",
@@ -150,7 +153,7 @@
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
-@@ -264,7 +303,7 @@
+@@ -237,7 +278,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -159,3 +162,27 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
+@@ -306,12 +347,12 @@
+ 
+ tasks.registerRunTask("runBundler") {
+     description = "Spin up a test server from the Mojang mapped bundler jar"
+-    classpath(tasks.createBundlerJar.flatMap { it.outputZip })
++    classpath(tasks.named<CreateBundlerJar>("createBundlerJar").flatMap { it.outputZip })
+     mainClass.set(null as String?)
+ }
+ tasks.registerRunTask("runPaperclip") {
+     description = "Spin up a test server from the Mojang mapped Paperclip jar"
+-    classpath(tasks.createPaperclipJar.flatMap { it.outputZip })
++    classpath(tasks.named<CreatePaperclipJar>("createPaperclipJar").flatMap { it.outputZip })
+     mainClass.set(null as String?)
+ }
+ 
+@@ -325,7 +366,7 @@
+ 
+         downloads {
+             register("server:default") {
+-                file = tasks.createPaperclipJar.flatMap { it.outputZip }
++                file.set(tasks.named<CreatePaperclipJar>("createPaperclipJar").flatMap { it.outputZip })
+                 nameResolver.set { project, _, version, build -> "$project-$version-$build.jar" }
+             }
+         }

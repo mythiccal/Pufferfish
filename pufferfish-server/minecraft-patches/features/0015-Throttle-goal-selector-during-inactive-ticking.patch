@@ -3,12 +3,11 @@ From: Kevin Raneri <kevin.raneri@gmail.com>
 Date: Sat, 11 Dec 2021 22:20:45 -0500
 Subject: [PATCH] Throttle goal selector during inactive ticking
 
-
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index e1eda6017a1e9abaf7e3b70dcc36e1ef372deb19..38cd477e17a29794c8a26ca01368c60adea7c575 100644
+index 47b7773b6fa2b5617763ee3f9f6ae57d251532df..5edab11fd68fa549951b59a24b46693ae1f5795e 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -217,11 +217,13 @@ public abstract class Mob extends LivingEntity implements EquipmentUser, Leashab
+@@ -211,15 +211,19 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          return this.lookControl;
      }
  
@@ -17,9 +16,17 @@ index e1eda6017a1e9abaf7e3b70dcc36e1ef372deb19..38cd477e17a29794c8a26ca01368c60a
      @Override
      public void inactiveTick() {
          super.inactiveTick();
+-        if (!this.aware) return; // Paper - Do not tick AI for inactive unaware mobs
 -        if (this.goalSelector.inactiveTick(this.activatedPriority, true)) { // Pufferfish - pass activated priority
-+        boolean isThrottled = gg.pufferfish.pufferfish.PufferfishConfig.throttleInactiveGoalSelectorTick && _pufferfish_inactiveTickDisableCounter++ % 20 != 0; // Pufferfish - throttle inactive goal selector ticking
++        if (!this.aware) {
++            return; // Paper - Do not tick AI for inactive unaware mobs
++        }
++        boolean isThrottled = gg.pufferfish.pufferfish.PufferfishConfig.throttleInactiveGoalSelectorTick && this._pufferfish_inactiveTickDisableCounter++ % 20 != 0; // Pufferfish - throttle inactive goal selector ticking
 +        if (this.goalSelector.inactiveTick(this.activatedPriority, true) && !isThrottled) { // Pufferfish - pass activated priority
              this.goalSelector.tick();
          }
-         if (this.targetSelector.inactiveTick(this.activatedPriority, true)) { // Pufferfish - pass activated priority
+-        if (this.targetSelector.inactiveTick(this.activatedPriority, true)) { // Pufferfish - pass activated priority
++        if (this.targetSelector.inactiveTick(this.activatedPriority, true) && !isThrottled) { // Pufferfish - pass activated priority
+             this.targetSelector.tick();
+         }
+     }

@@ -3,38 +3,37 @@ From: Paul Sauve <paul@technove.co>
 Date: Mon, 26 Apr 2021 10:52:56 -0500
 Subject: [PATCH] Cache climbing check for activation
 
-
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index cabb76cdac554bc0d79222079418f70a93feedb6..0a70e6dd6f543db0b94da925018ed951f6fbae7d 100644
+index 068ab77b620c2b4cdfee604ec3e3b9b193e5f047..371c3433e2b572bae33cc785e4af85cac538d31b 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
 @@ -240,7 +240,7 @@ public final class ActivationRange {
          }
          // special cases.
          if (entity instanceof final LivingEntity living) {
--            if (living.onClimbable() || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) {
-+            if (living.onClimbableCached() || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) { // Pufferfish - Use Cached
+-            if (living.blockPosition().equals(living.getLastClimbablePos().orElse(null)) || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) {
++            if (living.onClimbableCached() || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) { // Pufferfish - use cached
                  return 1;
              }
              if (entity instanceof final Mob mob && mob.getTarget() != null) {
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 441f70346bdd9da5aace8dfcc1e4ea5efb850b3f..305dbd4d8972a03bdc45d8bd5ca35a1a64700b4d 100644
+index d1c948b3ddea55d2321715d7425bd195f90ccfd9..753d2e530b07bbbd08544857632a499b3f49d5f5 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -2174,6 +2174,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -2183,6 +2183,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          return this.lastClimbablePos;
      }
  
 +    // Pufferfish start
-+    private boolean cachedOnClimable = false;
++    private boolean cachedOnClimbable = false;
 +    private BlockPos lastClimbingPosition = null;
 +
 +    public boolean onClimbableCached() {
 +        if (!this.blockPosition().equals(this.lastClimbingPosition)) {
-+            this.cachedOnClimable = this.onClimbable();
++            this.cachedOnClimbable = this.onClimbable();
 +            this.lastClimbingPosition = this.blockPosition();
 +        }
-+        return this.cachedOnClimable;
++        return this.cachedOnClimbable;
 +    }
 +    // Pufferfish end
 +

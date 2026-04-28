@@ -3,19 +3,18 @@ From: Kevin Raneri <kevin.raneri@gmail.com>
 Date: Wed, 27 Dec 2023 22:49:53 -0500
 Subject: [PATCH] TPS catchup
 
-
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 89d60f0e704835c4fdd491c595f44e60a9918e23..87b1af0c64b08c84314c988c818b0f938b9e18d7 100644
+index 7d88fc9c9a8a0e3ca34a4939429fc52b4f99da06..d9a2fbf415c9b9b0c74f82bf22ef9b55b39333d7 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1340,6 +1340,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
-                     profilerFiller.push("nextTickWait");
+@@ -1386,6 +1386,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+                     profiler.push("nextTickWait");
                      this.mayHaveDelayedTasks = true;
-                     this.delayedTasksMaxNextTickTimeNanos = Math.max(Util.getNanos() + l, this.nextTickTimeNanos);
+                     this.delayedTasksMaxNextTickTimeNanos = Math.max(Util.getNanos() + thisTickNanos, this.nextTickTimeNanos);
 +                    // Pufferfish start - tps catchup
 +                    if (!gg.pufferfish.pufferfish.PufferfishConfig.tpsCatchup) {
-+                        this.nextTickTimeNanos = Util.getNanos() + l;
-+                        this.delayedTasksMaxNextTickTimeNanos = nextTickTimeNanos;
++                        this.nextTickTimeNanos = Util.getNanos() + thisTickNanos;
++                        this.delayedTasksMaxNextTickTimeNanos = this.nextTickTimeNanos;
 +                    }
 +                    // Pufferfish end
                      this.startMeasuringTaskExecutionTime();
