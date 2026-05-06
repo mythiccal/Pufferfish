@@ -24,10 +24,10 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 diff --git a/net/minecraft/world/item/crafting/ShapelessRecipe.java b/net/minecraft/world/item/crafting/ShapelessRecipe.java
-index d4d4fad66be0f0c0225993026602dc61e10c6bce..42c673e07f254f1c3d15539fc2da22432490739d 100644
+index 53a818f..eb60e54 100644
 --- a/net/minecraft/world/item/crafting/ShapelessRecipe.java
 +++ b/net/minecraft/world/item/crafting/ShapelessRecipe.java
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ package net.minecraft.world.item.crafting;
  
  import com.mojang.serialization.MapCodec;
  import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -44,13 +44,13 @@ index d4d4fad66be0f0c0225993026602dc61e10c6bce..42c673e07f254f1c3d15539fc2da2243
 +    // Pufferfish start
      public ShapelessRecipe(
          final Recipe.CommonInfo commonInfo, final CraftingRecipe.CraftingBookInfo bookInfo, final ItemStackTemplate result, final List<Ingredient> ingredients
-     ) {
++    ) {
 +        this(commonInfo, bookInfo, result, ingredients, false);
 +    }
 +
 +    public ShapelessRecipe(
 +        final Recipe.CommonInfo commonInfo, final CraftingRecipe.CraftingBookInfo bookInfo, final ItemStackTemplate result, final List<Ingredient> ingredients, final boolean isBukkit
-+    ) {
+     ) {
          super(commonInfo, bookInfo);
          this.result = result;
          this.ingredients = ingredients;
@@ -60,7 +60,7 @@ index d4d4fad66be0f0c0225993026602dc61e10c6bce..42c673e07f254f1c3d15539fc2da2243
  
      // CraftBukkit start
      @Override
-@@ -74,6 +85,29 @@ public class ShapelessRecipe extends NormalCraftingRecipe {
+@@ -74,6 +85,28 @@ public class ShapelessRecipe extends NormalCraftingRecipe {
  
      @Override
      public boolean matches(final CraftingInput input, final Level level) {
@@ -86,7 +86,6 @@ index d4d4fad66be0f0c0225993026602dc61e10c6bce..42c673e07f254f1c3d15539fc2da2243
 +            return ingredients.isEmpty();
 +        }
 +        // Pufferfish end
-+
+         // Paper start - Improve exact choice recipe ingredients & unwrap ternary
          if (input.ingredientCount() != this.ingredients.size()) {
              return false;
-         } else {
