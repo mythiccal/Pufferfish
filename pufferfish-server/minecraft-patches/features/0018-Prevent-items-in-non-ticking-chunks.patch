@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Pufferfish <dev@pufferfish.host>
+Date: Tue, 7 Jul 2026 23:35:00 +0100
+Subject: [PATCH] Prevent items in non-ticking chunks
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index c3341ae5724ff6d26002bc4a90393447b63e55ae..116a52fa18e1db43f753dbc9ce61f154c94d0b6d 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1642,6 +1642,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+                 return true;
+             }
+             // Paper end - capture all item additions to the world
++            // Pufferfish start - don't spawn items into non-entity-ticking chunks
++            if (gg.pufferfish.pufferfish.PufferfishConfig.preventItemsInNonTickingChunks
++                    && entity instanceof net.minecraft.world.entity.item.ItemEntity
++                    && !this.isPositionEntityTicking(entity.blockPosition())) {
++                return false; // discard: the chunk ticks redstone but not entities, so the item would pile up un-ticked
++            }
++            // Pufferfish end
+             // SPIGOT-6415: Don't call spawn event when reason is null. For example when an entity teleports to a new world.
+             if (spawnReason != null && !org.bukkit.craftbukkit.event.CraftEventFactory.doEntityAddEventCalling(this, entity, spawnReason)) {
+                 return false;

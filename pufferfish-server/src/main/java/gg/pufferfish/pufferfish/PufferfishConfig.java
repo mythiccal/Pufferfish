@@ -159,6 +159,17 @@ public class PufferfishConfig {
 
 		setComment("projectile", "Optimizes projectile settings");
 	}
+
+	public static boolean preventItemsInNonTickingChunks;
+	private static void preventItemsInNonTickingChunks() {
+		preventItemsInNonTickingChunks = getBoolean("prevent-items-in-non-ticking-chunks", true,
+				"Prevents item entities from spawning into chunks that are loaded and",
+				"block-ticking (redstone runs) but NOT entity-ticking - the one-chunk ring",
+				"at the edge of simulation distance. This stops left-running dupers/droppers",
+				"from piling up thousands of un-ticked items that all try to merge when the",
+				"chunk is reactivated, which can lag or crash the server.",
+				"Items that would spawn in that ring are discarded.");
+	}
 	
 	private static void setComment(String key, String... comment) {
 		if (config.contains(key)) {
