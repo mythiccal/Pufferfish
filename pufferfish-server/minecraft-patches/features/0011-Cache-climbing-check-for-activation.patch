@@ -3,24 +3,25 @@ From: Paul Sauve <paul@technove.co>
 Date: Mon, 26 Apr 2021 10:52:56 -0500
 Subject: [PATCH] Cache climbing check for activation
 
+
 diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
-index 068ab77b620c2b4cdfee604ec3e3b9b193e5f047..371c3433e2b572bae33cc785e4af85cac538d31b 100644
+index 80556e9a3756b23f595a7946099b711774c17f45..3810f9a46f5414f13efc2a159d79e34e717e58cb 100644
 --- a/io/papermc/paper/entity/activation/ActivationRange.java
 +++ b/io/papermc/paper/entity/activation/ActivationRange.java
-@@ -240,7 +240,7 @@ public final class ActivationRange {
+@@ -241,7 +241,7 @@ public final class ActivationRange {
          }
          // special cases.
          if (entity instanceof final LivingEntity living) {
--            if (living.blockPosition().equals(living.getLastClimbablePos().orElse(null)) || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) {
-+            if (living.onClimbableCached() || living.jumping || living.hurtTime > 0 || !living.activeEffects.isEmpty() || living.isFreezing()) { // Pufferfish - use cached
+-            if (living.blockPosition().equals(living.getLastClimbablePos().orElse(null)) || living.isJumping() || living.hurtTime > 0 || !living.getActiveEffectsMap().isEmpty() || living.isFreezing()) {
++            if (living.onClimbableCached() || living.isJumping() || living.hurtTime > 0 || !living.getActiveEffectsMap().isEmpty() || living.isFreezing()) { // Pufferfish - use cached
                  return 1;
              }
              if (entity instanceof final Mob mob && mob.getTarget() != null) {
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index d1c948b3ddea55d2321715d7425bd195f90ccfd9..753d2e530b07bbbd08544857632a499b3f49d5f5 100644
+index 665e343cc773d0a96eb343d676b54bc662587230..3353962d7397fdaa565aaf96e82f916954da7ca4 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -2183,6 +2183,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -2166,6 +2166,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          return this.lastClimbablePos;
      }
  

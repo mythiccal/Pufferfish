@@ -3,11 +3,12 @@ From: Kevin Raneri <kevin.raneri@gmail.com>
 Date: Sat, 11 Dec 2021 22:20:45 -0500
 Subject: [PATCH] Throttle goal selector during inactive ticking
 
+
 diff --git a/net/minecraft/world/entity/Mob.java b/net/minecraft/world/entity/Mob.java
-index 47b7773b6fa2b5617763ee3f9f6ae57d251532df..5edab11fd68fa549951b59a24b46693ae1f5795e 100644
+index f729a498b5087d65d891687a6d4d12594f73174a..cc124e03ef71e199ef400e33d15603b2ebf91e1a 100644
 --- a/net/minecraft/world/entity/Mob.java
 +++ b/net/minecraft/world/entity/Mob.java
-@@ -211,15 +211,19 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
+@@ -215,15 +215,19 @@ public abstract class Mob extends LivingEntity implements Targeting, EquipmentUs
          return this.lookControl;
      }
  

@@ -3,11 +3,12 @@ From: Kevin Raneri <kevin.raneri@gmail.com>
 Date: Wed, 27 Dec 2023 22:49:53 -0500
 Subject: [PATCH] TPS catchup
 
+
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 7d88fc9c9a8a0e3ca34a4939429fc52b4f99da06..d9a2fbf415c9b9b0c74f82bf22ef9b55b39333d7 100644
+index be192be3db29abacf6bc207404836e81fd8ba543..7e25b2f67566bbbec201e76b9a6646f2b5776292 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1386,6 +1386,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1352,6 +1352,12 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                      profiler.push("nextTickWait");
                      this.mayHaveDelayedTasks = true;
                      this.delayedTasksMaxNextTickTimeNanos = Math.max(Util.getNanos() + thisTickNanos, this.nextTickTimeNanos);

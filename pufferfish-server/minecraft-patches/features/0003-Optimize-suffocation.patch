@@ -17,10 +17,10 @@ but is so much cheaper than the suffocation check that it's worth
 keeping it.
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 6a0ebbdfcc0bc07915574c1cf87463e82213ca7e..d1c948b3ddea55d2321715d7425bd195f90ccfd9 100644
+index 3a4da514c163e7565fc241835db52c464a5c4734..665e343cc773d0a96eb343d676b54bc662587230 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -434,7 +434,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -453,7 +453,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          profiler.push("livingEntityBaseTick");
          if (this.isAlive() && this.level() instanceof ServerLevel level) {
              boolean isPlayer = this instanceof Player;
@@ -29,7 +29,7 @@ index 6a0ebbdfcc0bc07915574c1cf87463e82213ca7e..d1c948b3ddea55d2321715d7425bd195
                  this.hurtServer(level, this.damageSources().inWall(), 1.0F);
              } else if (isPlayer && !level.getWorldBorder().isWithinBounds(this.getBoundingBox())) {
                  double dist = level.getWorldBorder().getDistanceToBorder(this) + level.getWorldBorder().getSafeZone();
-@@ -515,6 +515,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -534,6 +534,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          profiler.pop();
      }
  
@@ -50,10 +50,10 @@ index 6a0ebbdfcc0bc07915574c1cf87463e82213ca7e..d1c948b3ddea55d2321715d7425bd195
          return this.getAirSupply() <= -20;
      }
 diff --git a/net/minecraft/world/entity/boss/wither/WitherBoss.java b/net/minecraft/world/entity/boss/wither/WitherBoss.java
-index 419c29c003b3e690a89a14c0a9b3eb2ac3500175..5d3627e667de8063345ee8aeda0393e215a90b63 100644
+index 1ab44f34b5d18d12259717444370f886b3a56144..56d49ea6ec294f7d1eb5d9d4f49e6a1441dabbdf 100644
 --- a/net/minecraft/world/entity/boss/wither/WitherBoss.java
 +++ b/net/minecraft/world/entity/boss/wither/WitherBoss.java
-@@ -139,6 +139,13 @@ public class WitherBoss extends Monster implements RangedAttackMob {
+@@ -138,6 +138,13 @@ public class WitherBoss extends Monster implements RangedAttackMob {
          this.bossEvent.setName(this.getDisplayName());
      }
  

@@ -8,6 +8,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import org.apache.logging.log4j.Level;
 import org.bukkit.configuration.ConfigurationSection;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.EntityType;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -254,7 +255,7 @@ public class PufferfishConfig {
             entityType.dabEnabled = true; // reset all, before setting the ones to true
         }
         getStringList("dab.blacklisted-entities", "activation-range.blacklisted-entities", Collections.emptyList(), "A list of entities to ignore for activation")
-                .forEach(name -> EntityType.byString(name).ifPresentOrElse(entityType -> {
+                .forEach(name -> BuiltInRegistries.ENTITY_TYPE.getOptional(Identifier.parse(name)).ifPresentOrElse(entityType -> {
                     entityType.dabEnabled = false;
                 }, () -> MinecraftServer.LOGGER.warn("Unknown entity \"" + name + "\"")));
 

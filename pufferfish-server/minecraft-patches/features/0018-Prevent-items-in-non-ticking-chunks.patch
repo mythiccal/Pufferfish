@@ -5,10 +5,10 @@ Subject: [PATCH] Prevent items in non-ticking chunks
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index c3341ae5724ff6d26002bc4a90393447b63e55ae..116a52fa18e1db43f753dbc9ce61f154c94d0b6d 100644
+index 5c3ca3e565a9072bf07465e9c72109bafabeabe0..667ecc28ce5a73a4499bcb83a8c8928fc09370b7 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1642,6 +1642,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1657,6 +1657,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  return true;
              }
              // Paper end - capture all item additions to the world

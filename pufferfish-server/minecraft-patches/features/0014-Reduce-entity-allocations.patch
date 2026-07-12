@@ -3,8 +3,9 @@ From: Paul <paul@technove.co>
 Date: Fri, 2 Jul 2021 18:25:18 -0500
 Subject: [PATCH] Reduce entity allocations
 
+
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index c469eca4aa69a5e2ba1a943bf8592eeb1ebd9433..984560aeb0183aa45fa06c95bb2dca5f65de5672 100644
+index 7a82a07326c3d523bdeb710b62076a3ad966136d..7cb3ec95e1356e12d679a5fe81e225d5a96d89af 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
 @@ -382,6 +382,7 @@ public abstract class Entity
@@ -16,7 +17,7 @@ index c469eca4aa69a5e2ba1a943bf8592eeb1ebd9433..984560aeb0183aa45fa06c95bb2dca5f
      public final io.papermc.paper.entity.activation.ActivationType activationType = io.papermc.paper.entity.activation.ActivationType.activationTypeFor(this); // Paper - EAR 2/tracking ranges
      // Paper start - EAR 2
 diff --git a/net/minecraft/world/entity/ai/attributes/AttributeMap.java b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
-index 0c8a719bdfb4932171a8f66d76b00cc499f5beb9..b4fe0f8cc7f0708a186a1ae08e71a0c414b59de5 100644
+index 68bad6752bd313ca3ebde7fd4e3b2c46c5dee3ef..ecbd3e74c663ea94bd29cac4896acade0c7958d1 100644
 --- a/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 +++ b/net/minecraft/world/entity/ai/attributes/AttributeMap.java
 @@ -18,9 +18,11 @@ public class AttributeMap {
