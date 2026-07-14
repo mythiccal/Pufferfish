@@ -5,15 +5,16 @@ Subject: [PATCH] Prevent items in non-ticking chunks
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 5c3ca3e565a9072bf07465e9c72109bafabeabe0..667ecc28ce5a73a4499bcb83a8c8928fc09370b7 100644
+index 5c3ca3e565a9072bf07465e9c72109bafabeabe0..9649dadacc43a7d73bd98a3c7fabb342b55db834 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1657,6 +1657,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1657,6 +1657,15 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  return true;
              }
              // Paper end - capture all item additions to the world
 +            // Pufferfish start - don't spawn items into non-entity-ticking chunks
 +            if (gg.pufferfish.pufferfish.PufferfishConfig.preventItemsInNonTickingChunks
++                    && spawnReason != null
 +                    && entity instanceof net.minecraft.world.entity.item.ItemEntity
 +                    && !this.isPositionEntityTicking(entity.blockPosition())) {
 +                return false; // discard: the chunk ticks redstone but not entities, so the item would pile up un-ticked
