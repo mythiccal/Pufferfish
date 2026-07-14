@@ -8,12 +8,13 @@ diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/
 index c3341ae5724ff6d26002bc4a90393447b63e55ae..116a52fa18e1db43f753dbc9ce61f154c94d0b6d 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1642,6 +1642,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1642,6 +1642,14 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  return true;
              }
              // Paper end - capture all item additions to the world
 +            // Pufferfish start - don't spawn items into non-entity-ticking chunks
 +            if (gg.pufferfish.pufferfish.PufferfishConfig.preventItemsInNonTickingChunks
++                    && spawnReason != null
 +                    && entity instanceof net.minecraft.world.entity.item.ItemEntity
 +                    && !this.isPositionEntityTicking(entity.blockPosition())) {
 +                return false; // discard: the chunk ticks redstone but not entities, so the item would pile up un-ticked
