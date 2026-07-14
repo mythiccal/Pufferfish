@@ -8,7 +8,7 @@ diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/
 index 5c3ca3e565a9072bf07465e9c72109bafabeabe0..9649dadacc43a7d73bd98a3c7fabb342b55db834 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1657,6 +1657,15 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1657,6 +1657,14 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
                  return true;
              }
              // Paper end - capture all item additions to the world
