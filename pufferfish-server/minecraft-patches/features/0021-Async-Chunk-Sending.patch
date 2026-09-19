@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mythiccal <cwood2014.cw@gmail.com>
+Date: Sat, 19 Sep 2026 15:11:08 +0100
+Subject: [PATCH] Async Chunk Sending
+
+Offloads chunk packet serialization to a thread pool. Anti-Xray modified
+chunks remain on the synchronous path.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+index a52f93d0563f713b1d2b707cdb6ab74e4793a54d..dfe9de6b9ef8b2f1788cd433212f4a02092cf008 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java
+@@ -30,7 +30,7 @@ public class ClientboundLevelChunkPacketData {
+     );
+     private static final int TWO_MEGABYTES = 2097152; // Paper - diff on change - if this changes, update PacketEncoder
+     private final Map<Heightmap.Types, long[]> heightmaps;
+-    private final byte[] buffer;
++    private byte[] buffer; // Pufferfish - Async Chunk Sending - un-final for snapshot serialize
+     private final List<ClientboundLevelChunkPacketData.BlockEntityInfo> blockEntitiesData;
+     // Paper start - Handle oversized block entities in chunks
+     private final java.util.List<net.minecraft.network.protocol.Packet<?>> extraPackets = new java.util.ArrayList<>();
+@@ -44,7 +44,7 @@ public class ClientboundLevelChunkPacketData {
+     @Deprecated @io.papermc.paper.annotation.DoNotUse // Paper - Anti-Xray - Add chunk packet info
+     public ClientboundLevelChunkPacketData(final LevelChunk levelChunk) {
+         // Paper start - Anti-Xray - Add chunk packet info
+-        this(levelChunk, null);
++        this(levelChunk, (io.papermc.paper.antixray.ChunkPacketInfo<net.minecraft.world.level.block.state.BlockState>) null); // Pufferfish - Async Chunk Sending
+     }
+     public ClientboundLevelChunkPacketData(final LevelChunk levelChunk, final io.papermc.paper.antixray.ChunkPacketInfo<net.minecraft.world.level.block.state.BlockState> chunkPacketInfo) {
+         // Paper end - Anti-Xray - Add chunk packet info
+@@ -75,6 +75,60 @@ public class ClientboundLevelChunkPacketData {
+         }
+     }
+ 
++    // Pufferfish start - Async Chunk Sending
++    private LevelChunkSection @Nullable [] sectionSnapshot;
++
++    public ClientboundLevelChunkPacketData(LevelChunk levelChunk, LevelChunkSection[] sectionSnapshot) {
++        this.heightmaps = levelChunk.getHeightmaps()
++            .stream()
++            .filter(entryx -> ((Heightmap.Types)entryx.getKey()).sendToClient())
++            .collect(Collectors.toMap(Entry::getKey, entryx -> (long[])((Heightmap)entryx.getValue()).getRawData().clone()));
++        this.sectionSnapshot = sectionSnapshot;
++        this.blockEntitiesData = Lists.newArrayList();
++        int totalTileEntities = 0; // Paper - Handle oversized block entities in chunks
++
++        for (Entry<BlockPos, BlockEntity> entry : levelChunk.getBlockEntities().entrySet()) {
++            // Paper start - Handle oversized block entities in chunks
++            if (++totalTileEntities > BLOCK_ENTITY_LIMIT) {
++                net.minecraft.network.protocol.Packet<?> packet = entry.getValue().getUpdatePacket();
++                if (packet != null) {
++                    this.extraPackets.add(packet);
++                    continue;
++                }
++            }
++            // Paper end - Handle oversized block entities in chunks
++            this.blockEntitiesData.add(ClientboundLevelChunkPacketData.BlockEntityInfo.create(entry.getValue()));
++        }
++    }
++
++    public void serializeFromSnapshot() {
++        final LevelChunkSection[] sections = java.util.Objects.requireNonNull(this.sectionSnapshot, "section snapshot already consumed");
++
++        int size = 0;
++        for (LevelChunkSection section : sections) {
++            size += section.getSerializedSize();
++        }
++
++        final byte[] buffer = new byte[size];
++        ByteBuf byteBuf = Unpooled.wrappedBuffer(buffer);
++        byteBuf.writerIndex(0);
++        FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(byteBuf);
++
++        int chunkSectionIndex = 0;
++        for (LevelChunkSection section : sections) {
++            section.write(friendlyByteBuf, null, chunkSectionIndex);
++            chunkSectionIndex++;
++        }
++
++        if (byteBuf.writerIndex() != buffer.length) {
++            throw new IllegalStateException("Didn't fill chunk buffer: expected " + buffer.length + " bytes, got " + byteBuf.writerIndex());
++        }
++
++        this.buffer = buffer;
++        this.sectionSnapshot = null;
++    }
++    // Pufferfish end - Async Chunk Sending
++
+     public ClientboundLevelChunkPacketData(final RegistryFriendlyByteBuf input, final int x, final int z) {
+         this.heightmaps = HEIGHTMAPS_STREAM_CODEC.decode(input);
+         int size = input.readVarInt();
+diff --git a/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java b/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
+index a1018e9ca9dfb978d6e6633577abd7d5d0960fa6..1f096e60aeef197134b9da46bb8e03aa7bd14e8a 100644
+--- a/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
++++ b/net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java
+@@ -57,6 +57,26 @@ public class ClientboundLevelChunkWithLightPacket implements Packet<ClientGamePa
+         levelChunk.getLevel().chunkPacketBlockController.modifyBlocks(this, chunkPacketInfo); // Paper - Anti-Xray - Modify blocks
+     }
+ 
++    // Pufferfish start - Async Chunk Sending
++    public ClientboundLevelChunkWithLightPacket(LevelChunk chunk, LevelLightEngine lightEngine) {
++        ChunkPos chunkPos = chunk.getPos();
++        this.x = chunkPos.x();
++        this.z = chunkPos.z();
++        net.minecraft.world.level.chunk.LevelChunkSection[] sections = chunk.getSections();
++        net.minecraft.world.level.chunk.LevelChunkSection[] sectionSnapshot = new net.minecraft.world.level.chunk.LevelChunkSection[sections.length];
++        for (int i = 0; i < sections.length; ++i) {
++            sectionSnapshot[i] = sections[i].copy();
++        }
++        this.chunkData = new ClientboundLevelChunkPacketData(chunk, sectionSnapshot);
++        this.lightData = new ClientboundLightUpdatePacketData(chunkPos, lightEngine, null, null);
++    }
++
++    public void finishAsyncSerialization() {
++        this.chunkData.serializeFromSnapshot();
++        this.setReady(true);
++    }
++    // Pufferfish end - Async Chunk Sending
++
+     private ClientboundLevelChunkWithLightPacket(final RegistryFriendlyByteBuf input) {
+         this.x = input.readInt();
+         this.z = input.readInt();
+diff --git a/net/minecraft/server/network/PlayerChunkSender.java b/net/minecraft/server/network/PlayerChunkSender.java
+index 196c01fe5f200ed57e6f23e0939cac616305571a..6e774e20fa8ce7c006e7df4a09fd9b48872471d3 100644
+--- a/net/minecraft/server/network/PlayerChunkSender.java
++++ b/net/minecraft/server/network/PlayerChunkSender.java
+@@ -81,7 +81,22 @@ public class PlayerChunkSender {
+     public static void sendChunk(final ServerGamePacketListenerImpl connection, final ServerLevel level, final LevelChunk chunk) { // Paper - rewrite chunk system - public
+         // Paper start - Anti-Xray
+         final boolean shouldModify = level.chunkPacketBlockController.shouldModify(connection.player, chunk);
+-        connection.send(new ClientboundLevelChunkWithLightPacket(chunk, level.getLightEngine(), null, null, shouldModify));
++        // Pufferfish start - Async Chunk Sending
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableAsyncChunkSending && !shouldModify && gg.pufferfish.pufferfish.async.AsyncChunkSend.POOL != null) {
++            ClientboundLevelChunkWithLightPacket packet = new ClientboundLevelChunkWithLightPacket(chunk, level.getLightEngine());
++            connection.send(packet);
++            gg.pufferfish.pufferfish.async.AsyncChunkSend.POOL.execute(() -> {
++                try {
++                    packet.finishAsyncSerialization();
++                } catch (Throwable throwable) {
++                    LOGGER.error("Failed to serialize chunk {} for async sending, kicking {}", chunk.getPos(), connection.player.getScoreboardName(), throwable);
++                    net.minecraft.server.MinecraftServer.getServer().execute(() -> connection.disconnect(net.minecraft.network.chat.Component.literal("Chunk serialization failed")));
++                }
++            });
++        } else {
++            connection.send(new ClientboundLevelChunkWithLightPacket(chunk, level.getLightEngine(), null, null, shouldModify));
++        }
++        // Pufferfish end - Async Chunk Sending
+         // Paper end - Anti-Xray
+         // Paper start - PlayerChunkLoadEvent
+         if (io.papermc.paper.event.packet.PlayerChunkLoadEvent.getHandlerList().getRegisteredListeners().length > 0) {
+diff --git a/net/minecraft/world/level/chunk/LevelChunkSection.java b/net/minecraft/world/level/chunk/LevelChunkSection.java
+index 705f6314d2550b0f1c8c5209dd65161d89cbfd7e..81a21cd11b32e383c287e7acc8a0a099fe013b9d 100644
+--- a/net/minecraft/world/level/chunk/LevelChunkSection.java
++++ b/net/minecraft/world/level/chunk/LevelChunkSection.java
+@@ -11,7 +11,7 @@ import net.minecraft.world.level.material.FluidState;
+ 
+ public class LevelChunkSection implements ca.spottedleaf.moonrise.patches.block_counting.BlockCountingChunkSection { // Paper - block counting
+     public static final int BIOME_CONTAINER_BITS = 2;
+-    short nonEmptyBlockCount; // Paper - package private
++    volatile short nonEmptyBlockCount; // Paper - package private // Pufferfish - Async Chunk Sending - make volatile
+     private short fluidCount;
+     private short tickingBlockCount;
+     private short tickingFluidCount;

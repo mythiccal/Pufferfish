@@ -1,5 +1,6 @@
 package gg.pufferfish.pufferfish;
 
+import gg.pufferfish.pufferfish.async.pathfinding.PathfindTaskRejectPolicy;
 import gg.pufferfish.pufferfish.simd.SIMDDetection;
 import java.io.File;
 import java.io.IOException;
@@ -319,5 +320,99 @@ public class PufferfishConfig {
         disableMethodProfiler = getBoolean("misc.disable-method-profiler", true);
         setComment("misc", "Settings for things that don't belong elsewhere");
     }
+
+	public static boolean enableAsyncPathfinding;
+	public static int asyncPathfindingMaxThreads;
+	public static int asyncPathfindingKeepalive;
+	public static int asyncPathfindingQueueSize;
+	public static PathfindTaskRejectPolicy asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.CALLER_RUNS;
+
+	public static boolean enableParallelEntityTracker;
+	public static int parallelTrackerThreads;
+	public static int parallelTrackerKeepalive;
+
+	public static boolean enableAsyncChunkSending;
+	public static int asyncChunkSendingMaxThreads;
+
+	private static boolean asyncSettingsInitialized;
+	private static void asyncSettings() {
+		boolean pathfinding = getBoolean("async.pathfinding.enable", false,
+				"Offloads mob pathfinding to a thread pool. Experimental; requires a restart to take effect.");
+		int pathfindingThreads = getInt("async.pathfinding.max-threads", 1,
+				"Worker threads used for pathfinding.",
+				"0 = a quarter of available cores; negative = all cores minus that many.");
+		int pathfindingKeepalive = getInt("async.pathfinding.keepalive", 60,
+				"Seconds an idle pathfinding worker is kept alive.");
+		int pathfindingQueueSize = getInt("async.pathfinding.queue-size", 0,
+				"Max queued pathfinding tasks. 0 = max-threads * 256.");
+		String rejectPolicyName = getString("async.pathfinding.reject-policy", "CALLER_RUNS",
+				"Policy when the pathfinding queue is full.",
+				"FLUSH_ALL: run all pending tasks on the submitting thread.",
+				"CALLER_RUNS: run only the new task on the submitting thread.");
+
+		boolean tracker = getBoolean("async.parallel-entity-tracker.enable", false,
+				"Runs entity tracker visibility scans and packet diffs on a thread pool.",
+				"Pairing and Bukkit events stay on the tick thread. Experimental; requires a restart.");
+		int trackerThreads = getInt("async.parallel-entity-tracker.threads", 0,
+				"Worker threads used by the tracker.",
+				"0 = a quarter of available cores; negative = all cores minus that many.");
+		int trackerKeepalive = getInt("async.parallel-entity-tracker.keepalive", 60,
+				"Seconds an idle tracker worker is kept alive.");
+
+		boolean chunkSending = getBoolean("async.chunk-sending.enable", false,
+				"Offloads chunk packet serialization to a thread pool. Anti-Xray modified chunks stay sync.",
+				"Experimental; requires a restart to take effect.");
+		int chunkSendingThreads = getInt("async.chunk-sending.max-threads", 1,
+				"Worker threads used for chunk sending.",
+				"0 = a quarter of available cores; negative = all cores minus that many.");
+
+		setComment("async", "Experimental async optimizations ported from DivineMC/Petal.",
+				"These are off by default. Enable individually and restart the server.",
+				"Do not change thread counts while the server is running.");
+
+		if (asyncSettingsInitialized) {
+			return;
+		}
+		asyncSettingsInitialized = true;
+
+		int available = Runtime.getRuntime().availableProcessors();
+
+		enableAsyncPathfinding = pathfinding;
+		asyncPathfindingMaxThreads = resolveThreadCount(pathfindingThreads, available);
+		asyncPathfindingKeepalive = pathfindingKeepalive;
+		asyncPathfindingQueueSize = pathfindingQueueSize <= 0 ? asyncPathfindingMaxThreads * 256 : pathfindingQueueSize;
+		try {
+			asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.valueOf(rejectPolicyName);
+		} catch (IllegalArgumentException ignored) {
+			MinecraftServer.LOGGER.warn("Invalid async pathfinding reject policy {}, using CALLER_RUNS", rejectPolicyName);
+			asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.CALLER_RUNS;
+		}
+		if (enableAsyncPathfinding) {
+			MinecraftServer.LOGGER.info("Using {} threads for async pathfinding", asyncPathfindingMaxThreads);
+		}
+
+		enableParallelEntityTracker = tracker;
+		parallelTrackerThreads = resolveThreadCount(trackerThreads, available);
+		parallelTrackerKeepalive = trackerKeepalive;
+		if (enableParallelEntityTracker) {
+			MinecraftServer.LOGGER.info("Using {} threads for the parallel entity tracker", parallelTrackerThreads);
+		}
+
+		enableAsyncChunkSending = chunkSending;
+		asyncChunkSendingMaxThreads = resolveThreadCount(chunkSendingThreads, available);
+		if (enableAsyncChunkSending) {
+			MinecraftServer.LOGGER.info("Using {} threads for async chunk sending", asyncChunkSendingMaxThreads);
+		}
+	}
+
+	private static int resolveThreadCount(int configured, int available) {
+		if (configured < 0) {
+			return Math.max(available + configured, 1);
+		}
+		if (configured == 0) {
+			return Math.max(available / 4, 1);
+		}
+		return Math.max(configured, 1);
+	}
 
 }
