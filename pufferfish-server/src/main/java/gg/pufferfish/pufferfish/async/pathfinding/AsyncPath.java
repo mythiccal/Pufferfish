@@ -1,6 +1,5 @@
 package gg.pufferfish.pufferfish.async.pathfinding;
 
-import ca.spottedleaf.moonrise.common.util.TickThread;
 import gg.pufferfish.pufferfish.PufferfishConfig;
 import gg.pufferfish.pufferfish.util.NamedThreadFactory;
 import net.minecraft.core.BlockPos;
@@ -469,18 +468,20 @@ public final class AsyncPath extends Path {
 			return null;
 		}
 
-		return new ThreadPoolExecutor(
-			1,
+		ThreadPoolExecutor pool = new ThreadPoolExecutor(
+			PufferfishConfig.asyncPathfindingMaxThreads,
 			PufferfishConfig.asyncPathfindingMaxThreads,
 			PufferfishConfig.asyncPathfindingKeepalive, TimeUnit.SECONDS,
 			new LinkedBlockingQueue<>(PufferfishConfig.asyncPathfindingQueueSize),
 			new NamedThreadFactory<>(
 				THREAD_PREFIX,
-				TickThread::new,
+				Thread::new,
 				Thread.NORM_PRIORITY - 2
 			),
 			new RejectionHandler()
 		);
+		pool.allowCoreThreadTimeOut(true);
+		return pool;
 	}
 
 	private static class RejectionHandler implements RejectedExecutionHandler {

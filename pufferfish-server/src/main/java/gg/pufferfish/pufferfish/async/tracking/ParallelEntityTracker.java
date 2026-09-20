@@ -17,6 +17,7 @@ import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -47,71 +48,111 @@ public class ParallelEntityTracker {
 
 	private record ScanBatch(@Nullable List<ScanResult> deltas, @Nullable List<Entity> tickThreadSends) {}
 
-	public static void tick(final ServerLevel level, final ReferenceList<Entity> trackerEntities) {
+	public static void tick(final ServerLevel level, final ReferenceList<Entity> trackerEntities, final ReferenceList<Entity> trackerUnloadedEntities) {
 		final NearbyPlayers nearbyPlayers = level.moonrise$getNearbyPlayers();
 		final Entity[] scanEntitiesRaw = trackerEntities.getRawDataUnchecked();
 		final int scanLen = Math.min(scanEntitiesRaw.length, trackerEntities.size());
-		if (scanLen == 0) {
-			return;
-		}
-
-		final List<ScanResult> deltas = new ArrayList<>();
-		final List<Entity> tickThreadSends = new ArrayList<>();
-		runPhase(scanLen, (from, to) -> {
-			List<ScanResult> batchDeltas = null;
-			List<Entity> batchTickThreadSends = null;
-			for (int i = from; i < to; ++i) {
-				final Entity entity = scanEntitiesRaw[i];
-				if (entity == null) continue;
-				if (mustSendOnTickThread(entity)) {
-					if (batchTickThreadSends == null) batchTickThreadSends = new ArrayList<>();
-					batchTickThreadSends.add(entity);
-				}
-				final ChunkMap.TrackedEntity tracker = ((EntityTrackerEntity) entity).moonrise$getTrackedEntity();
-				if (tracker == null) continue;
-				try {
-					final ScanResult delta = tracker.scanPlayers(nearbyPlayers.getChunk(entity.chunkPosition()));
-					if (delta != null) {
-						if (batchDeltas == null) batchDeltas = new ArrayList<>();
-						batchDeltas.add(delta);
+		if (scanLen != 0) {
+			final List<ScanResult> deltas = new ArrayList<>();
+			final List<Entity> tickThreadSends = new ArrayList<>();
+			runPhase(scanLen, (from, to) -> {
+				List<ScanResult> batchDeltas = null;
+				List<Entity> batchTickThreadSends = null;
+				for (int i = from; i < to; ++i) {
+					final Entity entity = scanEntitiesRaw[i];
+					if (entity == null) continue;
+					if (mustSendOnTickThread(entity)) {
+						if (batchTickThreadSends == null) batchTickThreadSends = new ArrayList<>();
+						batchTickThreadSends.add(entity);
 					}
+					final ChunkMap.TrackedEntity tracker = ((EntityTrackerEntity) entity).moonrise$getTrackedEntity();
+					if (tracker == null) continue;
+					try {
+						final ScanResult delta = tracker.scanPlayers(nearbyPlayers.getChunk(entity.chunkPosition()));
+						if (delta != null) {
+							if (batchDeltas == null) batchDeltas = new ArrayList<>();
+							batchDeltas.add(delta);
+						}
+					} catch (Throwable throwable) {
+						LOGGER.error("Error scanning tracked players of entity {}", entity, throwable);
+					}
+				}
+				return batchDeltas == null && batchTickThreadSends == null ? null : new ScanBatch(batchDeltas, batchTickThreadSends);
+			}, batch -> {
+				if (batch.deltas() != null) deltas.addAll(batch.deltas());
+				if (batch.tickThreadSends() != null) tickThreadSends.addAll(batch.tickThreadSends());
+			});
+
+			for (int i = 0, size = deltas.size(); i < size; ++i) {
+				final ScanResult delta = deltas.get(i);
+				try {
+					delta.tracker().applyScan(delta);
 				} catch (Throwable throwable) {
-					LOGGER.error("Error scanning tracked players of entity {}", entity, throwable);
+					LOGGER.error("Error applying tracker changes", throwable);
 				}
 			}
-			return batchDeltas == null && batchTickThreadSends == null ? null : new ScanBatch(batchDeltas, batchTickThreadSends);
-		}, batch -> {
-			if (batch.deltas() != null) deltas.addAll(batch.deltas());
-			if (batch.tickThreadSends() != null) tickThreadSends.addAll(batch.tickThreadSends());
-		});
 
-		for (int i = 0, size = deltas.size(); i < size; ++i) {
-			final ScanResult delta = deltas.get(i);
-			try {
-				delta.tracker().applyScan(delta);
-			} catch (Throwable throwable) {
-				LOGGER.error("Error applying tracker changes", throwable);
+			final Entity[] sendEntitiesRaw = trackerEntities.getRawDataUnchecked();
+			final int sendLen = Math.min(sendEntitiesRaw.length, trackerEntities.size());
+			runPhase(sendLen, (from, to) -> {
+				for (int i = from; i < to; ++i) {
+					final Entity entity = sendEntitiesRaw[i];
+					if (entity == null || mustSendOnTickThread(entity)) continue;
+					sendChanges(entity);
+				}
+				return null;
+			}, null);
+
+			for (int i = 0, size = tickThreadSends.size(); i < size; ++i) {
+				sendChanges(tickThreadSends.get(i));
 			}
 		}
 
-		final Entity[] sendEntitiesRaw = trackerEntities.getRawDataUnchecked();
-		final int sendLen = Math.min(sendEntitiesRaw.length, trackerEntities.size());
-		runPhase(sendLen, (from, to) -> {
-			for (int i = from; i < to; ++i) {
-				final Entity entity = sendEntitiesRaw[i];
-				if (entity == null || mustSendOnTickThread(entity)) continue;
-				sendChanges(entity);
-			}
-			return null;
-		}, null);
-
-		for (int i = 0, size = tickThreadSends.size(); i < size; ++i) {
-			sendChanges(tickThreadSends.get(i));
-		}
+		clearUnloadedTrackers(trackerUnloadedEntities);
 	}
 
 	private static boolean mustSendOnTickThread(final Entity entity) {
-		return entity instanceof ServerPlayer || entity instanceof ItemFrame;
+		if (entity instanceof ServerPlayer || entity instanceof ItemFrame) {
+			return true;
+		}
+		if (hasPlayerPassenger(entity.getPassengers())) {
+			return true;
+		}
+		final ChunkMap.TrackedEntity tracker = ((EntityTrackerEntity) entity).moonrise$getTrackedEntity();
+		return tracker != null && tracker.serverEntity.pufferfish$lastPassengersContainsPlayer();
+	}
+
+	private static boolean hasPlayerPassenger(final List<Entity> passengers) {
+		for (int i = 0, size = passengers.size(); i < size; ++i) {
+			if (passengers.get(i) instanceof ServerPlayer) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static void clearUnloadedTrackers(final ReferenceList<Entity> unloadedEntities) {
+		final int unloadedLen = unloadedEntities.size();
+		if (unloadedLen == 0) {
+			return;
+		}
+		final Entity[] unloadedRaw = Arrays.copyOf(unloadedEntities.getRawDataUnchecked(), unloadedLen);
+		unloadedEntities.clear();
+		for (int i = 0; i < unloadedLen; ++i) {
+			final Entity entity = unloadedRaw[i];
+			if (entity == null) {
+				continue;
+			}
+			final ChunkMap.TrackedEntity tracker = ((EntityTrackerEntity) entity).moonrise$getTrackedEntity();
+			if (tracker == null) {
+				continue;
+			}
+			try {
+				tracker.moonrise$clearPlayers();
+			} catch (Throwable throwable) {
+				LOGGER.error("Error clearing tracker of unloaded entity {}", entity, throwable);
+			}
+		}
 	}
 
 	private static void sendChanges(final Entity entity) {

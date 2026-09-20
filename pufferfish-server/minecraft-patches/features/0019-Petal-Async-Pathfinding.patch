@@ -10,15 +10,14 @@ Licensed under GPL-3.0.
 Co-authored-by: Cursor <cursoragent@cursor.com>
 ---
  net/minecraft/server/MinecraftServer.java     |   1 +
- net/minecraft/server/level/ServerLevel.java   |   8 -
  .../world/entity/ai/behavior/AcquirePoi.java  |  62 ++++--
- .../entity/ai/behavior/MoveToTargetSink.java  | 200 ++++++++++++++++--
+ .../entity/ai/behavior/MoveToTargetSink.java  | 217 ++++++++++++++++--
  .../behavior/SetClosestHomeAsWalkTarget.java  |  51 ++++-
  .../entity/ai/goal/DoorInteractGoal.java      |   2 +-
  .../navigation/AmphibiousPathNavigation.java  |  16 ++
  .../ai/navigation/FlyingPathNavigation.java   |  17 ++
  .../ai/navigation/GroundPathNavigation.java   |  16 ++
- .../entity/ai/navigation/PathNavigation.java  | 106 ++++++++--
+ .../entity/ai/navigation/PathNavigation.java  |  99 ++++++++--
  .../navigation/WaterBoundPathNavigation.java  |  16 ++
  .../entity/ai/sensing/NearestBedSensor.java   |  38 +++-
  .../world/entity/animal/bee/Bee.java          |   4 +-
@@ -36,7 +35,7 @@ Co-authored-by: Cursor <cursoragent@cursor.com>
  .../level/pathfinder/PathfindingContext.java  |  26 ++-
  .../level/pathfinder/SwimNodeEvaluator.java   |  17 +-
  .../level/pathfinder/WalkNodeEvaluator.java   |  87 ++++----
- 27 files changed, 873 insertions(+), 176 deletions(-)
+ 26 files changed, 883 insertions(+), 168 deletions(-)
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
 index 0e3be68..a6fcb73 100644
@@ -50,25 +49,6 @@ index 0e3be68..a6fcb73 100644
          try {
              io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS); // Paper
          } catch (InterruptedException _) {} // Paper
-diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 56046e1..5c3ca3e 100644
---- a/net/minecraft/server/level/ServerLevel.java
-+++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1657,14 +1657,6 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
-                 return true;
-             }
-             // Paper end - capture all item additions to the world
--            // Pufferfish start - don't spawn items into non-entity-ticking chunks
--            if (gg.pufferfish.pufferfish.PufferfishConfig.preventItemsInNonTickingChunks
--                    && spawnReason != null
--                    && entity instanceof net.minecraft.world.entity.item.ItemEntity
--                    && !this.isPositionEntityTicking(entity.blockPosition())) {
--                return false; // discard: the chunk ticks redstone but not entities, so the item would pile up un-ticked
--            }
--            // Pufferfish end
-             // SPIGOT-6415: Don't call spawn event when reason is null. For example when an entity teleports to a new world.
-             if (spawnReason != null && !org.bukkit.craftbukkit.event.CraftEventFactory.doEntityAddEventCalling(this, entity, spawnReason)) {
-                 return false;
 diff --git a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 index e2eb02d..6842fb9 100644
 --- a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
@@ -195,13 +175,12 @@ index b40da00..70ca7d2 100644
          }
 
          brain.eraseMemory(MemoryModuleType.WALK_TARGET);
-@@ -67,11 +76,21 @@ public class MoveToTargetSink extends Behavior<Mob> {
+@@ -67,11 +76,20 @@ public class MoveToTargetSink extends Behavior<Mob> {
 
      @Override
      protected boolean canStillUse(final ServerLevel level, final Mob body, final long timestamp) {
 +        Optional<WalkTarget> walkTarget = body.getBrain().getMemory(MemoryModuleType.WALK_TARGET);
-+        if (walkTarget.isEmpty()
-+            || gg.pufferfish.pufferfish.PufferfishConfig.enableAsyncPathfinding && !this.matchesRequest(walkTarget.get())) {
++        if (walkTarget.isEmpty()) {
 +            return false;
 +        }
 +
@@ -219,7 +198,7 @@ index b40da00..70ca7d2 100644
          } else {
              return false;
          }
-@@ -79,41 +98,152 @@ public class MoveToTargetSink extends Behavior<Mob> {
+@@ -79,41 +97,165 @@ public class MoveToTargetSink extends Behavior<Mob> {
 
      @Override
      protected void stop(final ServerLevel level, final Mob body, final long timestamp) {
@@ -274,15 +253,22 @@ index b40da00..70ca7d2 100644
 -        }
 +        // Pufferfish start - Async Pathfinding
 +        if (gg.pufferfish.pufferfish.PufferfishConfig.enableAsyncPathfinding) {
-+            if (!this.isRequestCurrent(body)) {
++            if (!body.getBrain().hasMemoryValue(MemoryModuleType.WALK_TARGET)) {
 +                this.invalidateRequest();
 +                return;
 +            }
++            WalkTarget liveWalkTarget = body.getBrain().getMemory(MemoryModuleType.WALK_TARGET).get();
++            boolean sameDestination = this.matchesRequest(liveWalkTarget);
 +            if (this.path != null && this.requestPath != this.path) {
 +                this.invalidateRequest();
 +                return;
 +            }
-+            if (this.path != null && !this.path.isProcessed()) return;
++            if (this.path != null && !this.path.isProcessed()) {
++                if (!sameDestination) {
++                    this.start(level, body, timestamp);
++                }
++                return;
++            }
 
 -        if (newPath != null && this.lastTargetPos != null) {
 -            WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).get();
@@ -305,7 +291,7 @@ index b40da00..70ca7d2 100644
 +
 +                    if (!walkTarget.isPresent()) return;
 +                    if (!this.matchesRequest(walkTarget.get())) {
-+                        this.invalidateRequest();
++                        this.start(level, body, timestamp);
 +                        return;
 +                    }
 +
@@ -323,8 +309,17 @@ index b40da00..70ca7d2 100644
 +                    return;
 +                }
 +
-+                if (!this.isRequestCurrent(body) || this.path != this.requestPath) {
++                if (this.path != this.requestPath) {
 +                    this.invalidateRequest();
++                    return;
++                }
++                Optional<WalkTarget> stillWalkTarget = body.getBrain().getMemory(MemoryModuleType.WALK_TARGET);
++                if (stillWalkTarget.isEmpty()) {
++                    this.invalidateRequest();
++                    return;
++                }
++                if (!this.matchesRequest(stillWalkTarget.get())) {
++                    this.start(level, body, timestamp);
 +                    return;
 +                }
 +                body.getBrain().setMemory(MemoryModuleType.PATH, this.path);
@@ -344,10 +339,7 @@ index b40da00..70ca7d2 100644
 +
 +            if (newPath != null && this.lastTargetPos != null && brain.hasMemoryValue(MemoryModuleType.WALK_TARGET)) {
 +                WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).get(); // we know isPresent = true
-+                if (!this.matchesRequest(walkTarget)) {
-+                    this.invalidateRequest();
-+                    return;
-+                }
++                this.matchesRequest(walkTarget);
 +                if (walkTarget.getTarget().currentBlockPosition().distSqr(this.lastTargetPos) > 4.0D) {
 +                    this.start(level, body, timestamp);
 +                }
@@ -387,7 +379,7 @@ index b40da00..70ca7d2 100644
 
      private boolean tryComputePath(final Mob body, final WalkTarget walkTarget, final long timestamp) {
          BlockPos targetPos = walkTarget.getTarget().currentBlockPosition();
-@@ -144,6 +274,40 @@ public class MoveToTargetSink extends Behavior<Mob> {
+@@ -144,6 +286,45 @@ public class MoveToTargetSink extends Behavior<Mob> {
          return false;
      }
 
@@ -403,12 +395,17 @@ index b40da00..70ca7d2 100644
 +    }
 +
 +    private boolean matchesRequest(final WalkTarget walkTarget) {
-+        return this.requestedWalkTarget == walkTarget && this.requestedTarget == walkTarget.getTarget();
-+    }
-+
-+    private boolean isRequestCurrent(final Mob body) {
-+        Optional<WalkTarget> walkTarget = body.getBrain().getMemory(MemoryModuleType.WALK_TARGET);
-+        return walkTarget.isPresent() && this.matchesRequest(walkTarget.get()) && this.pathGeneration == this.requestGeneration;
++        if (this.requestedWalkTarget == walkTarget && this.requestedTarget == walkTarget.getTarget()) {
++            return true;
++        }
++        // Vanilla OneShots replace WalkTarget every tick; only re-path when the destination moved > 2 blocks
++        if (this.lastTargetPos != null
++            && walkTarget.getTarget().currentBlockPosition().distSqr(this.lastTargetPos) <= 4.0) {
++            this.requestedWalkTarget = walkTarget;
++            this.requestedTarget = walkTarget.getTarget();
++            return true;
++        }
++        return false;
 +    }
 +
 +    private void invalidateRequest() {
@@ -623,27 +620,26 @@ diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/
 index 862224d..fd4618b 100644
 --- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-@@ -51,6 +51,10 @@ public abstract class PathNavigation {
+@@ -51,6 +51,8 @@ public abstract class PathNavigation {
      protected NodeEvaluator nodeEvaluator;
      private @Nullable BlockPos targetPos;
      private int reachRange;
-+    private long pathRequestGeneration;
 +    private @Nullable Path pendingPathMetadataPath;
-+    private long pendingPathMetadataGeneration;
 +    private int pendingPathMetadataReachRange;
      private float maxVisitedNodesMultiplier = 1.0F;
      public final PathFinder pathFinder;
      private boolean isStuck;
-@@ -102,7 +106,7 @@ public abstract class PathNavigation {
+@@ -102,7 +104,8 @@ public abstract class PathNavigation {
          if (this.level.getGameTime() - this.timeLastRecompute <= 20L || !this.canUpdatePath()) {
              this.hasDelayedRecomputation = true;
          } else if (this.targetPos != null) {
 -            this.path = null;
 +            this.invalidatePathRequest();
              this.path = this.createPath(this.targetPos, this.reachRange);
++            this.applyPendingPathMetadata(this.path);
              this.timeLastRecompute = this.level.getGameTime();
              this.hasDelayedRecomputation = false;
-@@ -167,6 +171,12 @@ public abstract class PathNavigation {
+@@ -167,6 +170,12 @@ public abstract class PathNavigation {
              return null;
          }
 
@@ -656,12 +652,10 @@ index 862224d..fd4618b 100644
          if (this.path != null && !this.path.isDone() && targets.contains(this.targetPos)) {
              return this.path;
          }
-@@ -193,15 +203,61 @@ public abstract class PathNavigation {
+@@ -193,15 +202,56 @@ public abstract class PathNavigation {
          BlockPos fromPos = above ? this.mob.blockPosition().above() : this.mob.blockPosition();
          int radius = (int)(maxPathLength + radiusOffset);
          PathNavigationRegion region = new PathNavigationRegion(this.level, fromPos.offset(-radius, -radius, -radius), fromPos.offset(radius, radius, radius));
-+        final long requestGeneration = ++this.pathRequestGeneration;
-+        this.pendingPathMetadataPath = null;
          Path path = this.pathFinder.findPath(region, this.mob, targets, maxPathLength, reachRange, this.maxVisitedNodesMultiplier);
 -        profiler.pop();
 -        if (path != null && path.getTarget() != null) {
@@ -674,11 +668,10 @@ index 862224d..fd4618b 100644
 +
 +            if (path != null) {
 +                this.pendingPathMetadataPath = path;
-+                this.pendingPathMetadataGeneration = requestGeneration;
 +                this.pendingPathMetadataReachRange = reachRange;
 +            }
 +            gg.pufferfish.pufferfish.async.pathfinding.AsyncPath.applyAfterProcessing(path, processedPath -> {
-+                this.applyPathMetadata(processedPath, requestGeneration, reachRange);
++                this.applyPathMetadata(processedPath, reachRange);
 +            });
 +        } else {
 +            profiler.pop();
@@ -693,10 +686,8 @@ index 862224d..fd4618b 100644
 +        return path;
 +    }
 +
-+    private void applyPathMetadata(final @Nullable Path processedPath, final long requestGeneration, final int reachRange) {
-+        if (processedPath == null
-+            || processedPath != this.path
-+            || requestGeneration != this.pathRequestGeneration) {
++    private void applyPathMetadata(final @Nullable Path processedPath, final int reachRange) {
++        if (processedPath == null || processedPath != this.path) {
 +            return;
 +        }
 +
@@ -708,21 +699,21 @@ index 862224d..fd4618b 100644
          }
 
 -        return path;
-+        if (this.pendingPathMetadataPath == processedPath && this.pendingPathMetadataGeneration == requestGeneration) {
++        if (this.pendingPathMetadataPath == processedPath) {
 +            this.pendingPathMetadataPath = null;
 +        }
 +    }
 +
-+    private void applyPendingPathMetadata(final Path activePath) {
-+        if (this.pendingPathMetadataPath == activePath
-+            && this.pendingPathMetadataGeneration == this.pathRequestGeneration
++    private void applyPendingPathMetadata(final @Nullable Path activePath) {
++        if (activePath != null
++            && this.pendingPathMetadataPath == activePath
 +            && activePath.isProcessed()) {
-+            this.applyPathMetadata(activePath, this.pathRequestGeneration, this.pendingPathMetadataReachRange);
++            this.applyPathMetadata(activePath, this.pendingPathMetadataReachRange);
 +        }
      }
 
      // Paper start - Perf: Optimise pathfinding
-@@ -239,22 +295,36 @@ public abstract class PathNavigation {
+@@ -239,22 +289,36 @@ public abstract class PathNavigation {
 
      public boolean moveTo(final @Nullable Path newPath, final double speedModifier) {
          if (newPath == null) {
@@ -763,7 +754,7 @@ index 862224d..fd4618b 100644
 
          this.speedModifier = speedModifier;
          Vec3 mobPos = this.getTempMobPos();
-@@ -272,6 +342,7 @@ public abstract class PathNavigation {
+@@ -272,6 +336,7 @@ public abstract class PathNavigation {
          if (this.hasDelayedRecomputation) {
              this.recomputePath();
          }
@@ -771,7 +762,7 @@ index 862224d..fd4618b 100644
 
          if (!this.isDone()) {
              if (this.canUpdatePath()) {
-@@ -297,6 +368,7 @@ public abstract class PathNavigation {
+@@ -297,6 +362,7 @@ public abstract class PathNavigation {
      }
 
      protected void followThePath() {
@@ -779,7 +770,7 @@ index 862224d..fd4618b 100644
          Vec3 mobPos = this.getTempMobPos();
          this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
          Vec3i currentNodePos = this.path.getNextNodePos();
-@@ -398,6 +470,15 @@ public abstract class PathNavigation {
+@@ -398,6 +464,14 @@ public abstract class PathNavigation {
      }
 
      public void stop() {
@@ -787,7 +778,6 @@ index 862224d..fd4618b 100644
 +    }
 +
 +    private void invalidatePathRequest() {
-+        ++this.pathRequestGeneration;
 +        this.pendingPathMetadataPath = null;
 +        if (this.path instanceof gg.pufferfish.pufferfish.async.pathfinding.AsyncPath asyncPath) {
 +            asyncPath.cancel();
@@ -795,7 +785,7 @@ index 862224d..fd4618b 100644
          this.path = null;
      }
 
-@@ -455,12 +536,13 @@ public abstract class PathNavigation {
+@@ -455,12 +529,13 @@ public abstract class PathNavigation {
      }
 
      public boolean shouldRecomputePath(final BlockPos pos) {
@@ -1205,7 +1195,7 @@ index 21d969b..79197f4 100644
              neighbors[numValidNeighbors++] = downNode;
          }
 
-+        final int seaLevel = this.currentContext.level() instanceof gg.pufferfish.pufferfish.async.pathfinding.PathfindingSnapshot snapshot ? snapshot.seaLevel() : 63;
++        final int seaLevel = this.currentContext.level() instanceof gg.pufferfish.pufferfish.async.pathfinding.PathfindingSnapshot snapshot ? snapshot.seaLevel() : this.mob.level().getSeaLevel();
          for (int i = 0; i < numValidNeighbors; i++) {
              Node neighbor = neighbors[i];
 -            if (neighbor.type == PathType.WATER && this.prefersShallowSwimming && neighbor.y < this.mob.level().getSeaLevel() - 10) {
@@ -1521,7 +1511,7 @@ index 253074a..6845902 100644
          if (from == null) {
 +            if (nodeEvaluator != this.nodeEvaluator) {
 +                nodeEvaluator.doneForAsync();
-+                gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.removeNodeEvaluator(nodeEvaluator);
++                gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.returnNodeEvaluator(nodeEvaluator);
 +            }
              return null;
          }
@@ -1557,7 +1547,7 @@ index 253074a..6845902 100644
 +                    maxVisitedNodesMultiplier
 +                ), () -> {
 +            nodeEvaluator.doneForAsync();
-+            gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.removeNodeEvaluator(nodeEvaluator);
++            gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.returnNodeEvaluator(nodeEvaluator);
 +        });
 +        // Pufferfish end - Async Pathfinding
      }

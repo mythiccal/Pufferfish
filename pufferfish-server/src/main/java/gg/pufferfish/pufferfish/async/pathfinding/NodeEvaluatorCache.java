@@ -1,6 +1,6 @@
 package gg.pufferfish.pufferfish.async.pathfinding;
 
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import net.minecraft.world.level.pathfinder.BinaryHeap;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.NodeEvaluator;
@@ -13,7 +13,7 @@ import java.util.IdentityHashMap;
 import java.util.Set;
 
 public final class NodeEvaluatorCache {
-	private static final Int2ObjectOpenHashMap<ArrayDeque<NodeEvaluator>> threadLocalNodeEvaluators = new Int2ObjectOpenHashMap<>();
+	private static final Object2ObjectOpenHashMap<NodeEvaluatorFeatures.PoolKey, ArrayDeque<NodeEvaluator>> threadLocalNodeEvaluators = new Object2ObjectOpenHashMap<>();
 	/**
 	 * Tracks only currently leased evaluators. Identity semantics are important
 	 * here, and unlike the old evaluator-to-generator map this does not retain a
@@ -29,11 +29,11 @@ public final class NodeEvaluatorCache {
 	}
 
 	public static synchronized @NotNull NodeEvaluator takeNodeEvaluator(@NotNull NodeEvaluatorGenerator generator, @NotNull NodeEvaluator localNodeEvaluator) {
-		final int nodeEvaluatorFeatures = NodeEvaluatorFeatures.fromNodeEvaluator(localNodeEvaluator);
-		NodeEvaluator nodeEvaluator = threadLocalNodeEvaluators.computeIfAbsent(nodeEvaluatorFeatures, key -> new ArrayDeque<>()).poll();
+		final NodeEvaluatorFeatures.PoolKey key = NodeEvaluatorFeatures.poolKey(localNodeEvaluator);
+		NodeEvaluator nodeEvaluator = threadLocalNodeEvaluators.computeIfAbsent(key, ignored -> new ArrayDeque<>()).poll();
 
 		if (nodeEvaluator == null) {
-			nodeEvaluator = generator.generate(NodeEvaluatorFeatures.unpack(nodeEvaluatorFeatures));
+			nodeEvaluator = generator.generate(NodeEvaluatorFeatures.unpack(key.features()));
 		}
 
 		Validate.notNull(nodeEvaluator, "NodeEvaluator generator returned null");
@@ -49,8 +49,8 @@ public final class NodeEvaluatorCache {
 			return;
 		}
 
-		final int nodeEvaluatorFeatures = NodeEvaluatorFeatures.fromNodeEvaluator(nodeEvaluator);
-		threadLocalNodeEvaluators.computeIfAbsent(nodeEvaluatorFeatures, key -> new ArrayDeque<>()).offer(nodeEvaluator);
+		final NodeEvaluatorFeatures.PoolKey key = NodeEvaluatorFeatures.poolKey(nodeEvaluator);
+		threadLocalNodeEvaluators.computeIfAbsent(key, ignored -> new ArrayDeque<>()).offer(nodeEvaluator);
 	}
 
 	public static synchronized void removeNodeEvaluator(@NotNull final NodeEvaluator nodeEvaluator) {
