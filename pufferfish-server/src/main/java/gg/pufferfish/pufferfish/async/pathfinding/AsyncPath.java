@@ -8,7 +8,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.pathfinder.Node;
 import net.minecraft.world.level.pathfinder.Path;
-import net.minecraft.world.level.pathfinder.PathFinder;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -25,9 +24,10 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 @SuppressWarnings("NullableProblems")
 public final class AsyncPath extends Path {
@@ -40,61 +40,68 @@ public final class AsyncPath extends Path {
 
 	private final ArrayList<Consumer<Path>> postProcessingCallbacks = new ArrayList<>(0);
 	private final Set<BlockPos> targetPositions;
-	private final AtomicReference<Function<PathFinder, Path>> pathFunction;
-	private final PathFinder finder;
 	private final AtomicReference<Path> computedPath = new AtomicReference<>();
+	private final WorkItem workItem;
+	private volatile CompletableFuture<?> processingFuture;
 
 	private volatile BlockPos target;
 	private volatile float distToTarget = 0;
 	private volatile boolean canReach = true;
 
-	public AsyncPath(@NotNull PathFinder finder,
-					 @NotNull List<Node> emptyNodeList,
+	public AsyncPath(@NotNull List<Node> emptyNodeList,
 					 @NotNull Set<BlockPos> targetPositions,
-					 @NotNull Function<PathFinder, Path> pathFunction) {
+					 @NotNull Supplier<Path> pathSupplier) {
+		this(emptyNodeList, targetPositions, pathSupplier, () -> {});
+	}
+
+	public AsyncPath(@NotNull List<Node> emptyNodeList,
+					 @NotNull Set<BlockPos> targetPositions,
+					 @NotNull Supplier<Path> pathSupplier,
+					 @NotNull Runnable cleanup) {
 		super(emptyNodeList, null, false);
 
-		this.finder = finder;
 		this.nodes = emptyNodeList;
-		this.targetPositions = targetPositions;
-		this.pathFunction = new AtomicReference<>(pathFunction);
+		this.targetPositions = Set.copyOf(targetPositions);
+		final BlockPos failedTarget = this.targetPositions.stream().findFirst().orElse(BlockPos.ZERO);
+		this.workItem = new WorkItem(pathSupplier, this.computedPath, failedTarget, cleanup);
 
 		queueProcessing();
 	}
 
 	private void queueProcessing() {
 		if (EXECUTOR == null) {
-			computePath();
+			// Keep the class usable when async execution is disabled or when a
+			// caller explicitly constructs an AsyncPath in synchronous mode.
+			this.workItem.run();
 			return;
 		}
 
-		CompletableFuture.runAsync(this::computePath, EXECUTOR)
-			.orTimeout(60L, TimeUnit.SECONDS)
-			.exceptionally(throwable -> {
-				Throwable cause = throwable;
-				while (cause.getCause() != null) cause = cause.getCause();
-				if (cause instanceof TimeoutException) {
-					LOGGER.warn("Async pathfinding timed out after 60 seconds", throwable);
-				} else {
-					LOGGER.warn("Error during async pathfinding", throwable);
-				}
-				this.computedPath.compareAndSet(null, failedPath());
-				return null;
-			});
-	}
+		this.processingFuture = WorkItem.withTimeout(this.workItem);
 
-	private void computePath() {
-		synchronized (this.finder) {
-			final Function<PathFinder, Path> function = this.pathFunction.getAndSet(null);
-			if (function == null) return;
-
-			final Path computed = Objects.requireNonNull(function.apply(this.finder));
-			this.computedPath.compareAndSet(null, computed);
+		// The submitted Runnable is the static WorkItem. It has no reference to this path
+		// or to any post-processing callback, so queued work cannot retain the path graph.
+		try {
+			EXECUTOR.execute(this.workItem);
+		} catch (Throwable throwable) {
+			// A custom executor/rejection handler may still throw (for example
+			// while shutdown races submission).  Claim queued ownership here so
+			// the evaluator lease cannot be stranded.
+			LOGGER.warn("Unable to queue async pathfinding work", throwable);
+			this.workItem.cancel();
 		}
 	}
 
-	private Path failedPath() {
-		return new Path(List.of(), this.targetPositions.iterator().next(), false);
+	/**
+	 * Abandons a queued request. A running worker retains ownership until its
+	 * finally block, so cancellation cannot return an evaluator while it is in
+	 * use.
+	 */
+	public void cancel() {
+		this.workItem.cancel();
+		final CompletableFuture<?> future = this.processingFuture;
+		if (future != null) {
+			future.cancel(false);
+		}
 	}
 
 	private void complete(@NotNull Path completedPath) {
@@ -131,11 +138,143 @@ public final class AsyncPath extends Path {
 
 		Path computed = this.computedPath.get();
 		if (computed == null) {
-			computePath();
-			computed = Objects.requireNonNull(this.computedPath.get());
+			// If the executor has not started the work yet, the main thread can claim it.
+			// If a worker already owns it, run() is a no-op and we wait for its completion.
+			this.workItem.run();
+			computed = this.computedPath.get();
+			if (computed == null) {
+				try {
+					this.workItem.completion.join();
+				} catch (Throwable throwable) {
+					LOGGER.warn("Error waiting for async pathfinding", throwable);
+					this.workItem.cancel();
+				}
+				computed = this.computedPath.get();
+			}
+			if (computed == null) {
+				this.workItem.cancel();
+				computed = this.computedPath.get();
+			}
 		}
 
-		complete(computed);
+		complete(Objects.requireNonNull(computed));
+	}
+
+	/**
+	 * The executor-owned unit of work. This class deliberately contains no
+	 * reference to AsyncPath (or its callbacks), allowing queued work to be
+	 * discarded without retaining the path object.
+	 */
+	private static final class WorkItem implements Runnable {
+		private enum State { QUEUED, RUNNING, DONE, CANCELLED }
+
+		private final AtomicReference<Supplier<Path>> supplier;
+		private final AtomicReference<Path> result;
+		private final BlockPos failedTarget;
+		private final AtomicReference<Runnable> cleanup;
+		private final AtomicReference<State> state = new AtomicReference<>(State.QUEUED);
+		private final AtomicBoolean cleanupComplete = new AtomicBoolean();
+		private final CompletableFuture<Path> completion = new CompletableFuture<>();
+
+		private WorkItem(@NotNull Supplier<Path> supplier,
+						 @NotNull AtomicReference<Path> result,
+						 @NotNull BlockPos failedTarget,
+						 @NotNull Runnable cleanup) {
+			this.supplier = new AtomicReference<>(supplier);
+			this.result = result;
+			this.failedTarget = failedTarget;
+			this.cleanup = new AtomicReference<>(cleanup);
+		}
+
+		@Override
+		public void run() {
+			if (!this.state.compareAndSet(State.QUEUED, State.RUNNING)) {
+				return;
+			}
+
+			try {
+				final Supplier<Path> supplier = this.supplier.getAndSet(null);
+				this.result.compareAndSet(null, Objects.requireNonNull(supplier).get());
+			} catch (Throwable throwable) {
+				LOGGER.warn("Error during async pathfinding", throwable);
+				publishFailedPath();
+			} finally {
+				cleanupOnce();
+				publishFailedPathIfMissing();
+				this.state.compareAndSet(State.RUNNING, State.DONE);
+				this.completion.complete(this.result.get());
+			}
+		}
+
+		private void cancel() {
+			if (this.state.compareAndSet(State.QUEUED, State.CANCELLED)) {
+				this.supplier.getAndSet(null);
+				publishFailedPath();
+				cleanupOnce();
+				this.completion.complete(this.result.get());
+				return;
+			}
+
+			// A running supplier still owns its evaluator/resources. Publish a failed
+			// path to unblock readers, but let run() perform cleanup in its finally.
+			if (this.state.get() == State.RUNNING) {
+				publishFailedPath();
+				this.completion.complete(this.result.get());
+			}
+		}
+
+		private static CompletableFuture<Path> withTimeout(@NotNull WorkItem workItem) {
+			return workItem.completion.orTimeout(60L, TimeUnit.SECONDS)
+				.whenComplete((ignored, throwable) -> onCompletion(workItem, throwable));
+		}
+
+		private static void onCompletion(@NotNull WorkItem workItem, @Nullable Throwable throwable) {
+			if (throwable == null) {
+				return;
+			}
+			if (throwable instanceof java.util.concurrent.CancellationException) {
+				workItem.cancel();
+				return;
+			}
+
+			Throwable cause = throwable;
+			while (cause.getCause() != null) {
+				cause = cause.getCause();
+			}
+			if (cause instanceof TimeoutException) {
+				LOGGER.warn("Async pathfinding timed out after 60 seconds", throwable);
+			} else {
+				LOGGER.warn("Error during async pathfinding", throwable);
+			}
+			workItem.cancel();
+		}
+
+		private void publishFailedPathIfMissing() {
+			this.result.compareAndSet(null, failedPath());
+		}
+
+		private void publishFailedPath() {
+			this.result.compareAndSet(null, failedPath());
+		}
+
+		private Path failedPath() {
+			return new Path(List.of(), this.failedTarget, false);
+		}
+
+		private void cleanupOnce() {
+			if (!this.cleanupComplete.compareAndSet(false, true)) {
+				return;
+			}
+			final Runnable cleanup = this.cleanup.getAndSet(null);
+			if (cleanup == null) {
+				return;
+			}
+			try {
+				cleanup.run();
+			} catch (Throwable throwable) {
+				LOGGER.error("Error releasing async pathfinding resources", throwable);
+			}
+		}
 	}
 
 	@Override
@@ -348,6 +487,9 @@ public final class AsyncPath extends Path {
 		@Override
 		public void rejectedExecution(Runnable task, ThreadPoolExecutor executor) {
 			if (executor.isShutdown()) {
+				if (task instanceof WorkItem workItem) {
+					workItem.cancel();
+				}
 				return;
 			}
 

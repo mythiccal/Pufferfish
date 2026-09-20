@@ -59,7 +59,7 @@ index 7f0df1c26f93d53b5925c564374f3e5fa6d966b3..b6325a96faed7b18438612b7f34dcd88
                  final ServerPlayer player = playersRaw[i];
                  this.updatePlayer(player);
              }
-@@ -1256,6 +1274,79 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+@@ -1256,6 +1274,83 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
              }
          }
  
@@ -130,7 +130,11 @@ index 7f0df1c26f93d53b5925c564374f3e5fa6d966b3..b6325a96faed7b18438612b7f34dcd88
 +            final java.util.List<ServerPlayer> toAdd = result.toAdd();
 +            if (toAdd != null) {
 +                for (int i = 0, len = toAdd.size(); i < len; ++i) {
-+                    this.addPlayer(toAdd.get(i));
++                    final ServerPlayer player = toAdd.get(i);
++                    // Revalidate on the main thread: scan visibility may be stale after plugin/entity state changes.
++                    if (this.wantsToSee(player)) {
++                        this.addPlayer(player);
++                    }
 +                }
 +            }
 +        }
