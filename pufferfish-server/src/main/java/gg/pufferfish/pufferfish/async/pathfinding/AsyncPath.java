@@ -25,6 +25,7 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -39,9 +40,9 @@ public final class AsyncPath extends Path {
 
 	private final ArrayList<Consumer<Path>> postProcessingCallbacks = new ArrayList<>(0);
 	private final Set<BlockPos> targetPositions;
-	private @Nullable Function<PathFinder, Path> pathFunction;
+	private final AtomicReference<Function<PathFinder, Path>> pathFunction;
 	private final PathFinder finder;
-	private volatile @Nullable Path computedPath;
+	private final AtomicReference<Path> computedPath = new AtomicReference<>();
 
 	private volatile BlockPos target;
 	private volatile float distToTarget = 0;
@@ -56,37 +57,44 @@ public final class AsyncPath extends Path {
 		this.finder = finder;
 		this.nodes = emptyNodeList;
 		this.targetPositions = targetPositions;
-		this.pathFunction = pathFunction;
+		this.pathFunction = new AtomicReference<>(pathFunction);
 
 		queueProcessing();
 	}
 
 	private void queueProcessing() {
 		if (EXECUTOR == null) {
-			synchronized (finder) {
-				if (this.computedPath == null) {
-					this.computedPath = Objects.requireNonNull(pathFunction).apply(finder);
-				}
-			}
+			computePath();
 			return;
 		}
 
-		CompletableFuture.runAsync(() -> {
-			synchronized (finder) {
-				if (this.computedPath == null) {
-					this.computedPath = Objects.requireNonNull(pathFunction).apply(finder);
-				}
-			}
-		}, EXECUTOR)
+		CompletableFuture.runAsync(this::computePath, EXECUTOR)
 			.orTimeout(60L, TimeUnit.SECONDS)
 			.exceptionally(throwable -> {
-				if (throwable instanceof TimeoutException) {
+				Throwable cause = throwable;
+				while (cause.getCause() != null) cause = cause.getCause();
+				if (cause instanceof TimeoutException) {
 					LOGGER.warn("Async pathfinding timed out after 60 seconds", throwable);
 				} else {
 					LOGGER.warn("Error during async pathfinding", throwable);
 				}
+				this.computedPath.compareAndSet(null, failedPath());
 				return null;
 			});
+	}
+
+	private void computePath() {
+		synchronized (this.finder) {
+			final Function<PathFinder, Path> function = this.pathFunction.getAndSet(null);
+			if (function == null) return;
+
+			final Path computed = Objects.requireNonNull(function.apply(this.finder));
+			this.computedPath.compareAndSet(null, computed);
+		}
+	}
+
+	private Path failedPath() {
+		return new Path(List.of(), this.targetPositions.iterator().next(), false);
 	}
 
 	private void complete(@NotNull Path completedPath) {
@@ -100,8 +108,6 @@ public final class AsyncPath extends Path {
 			this.target = completedPath.getTarget();
 			this.distToTarget = completedPath.getDistToTarget();
 			this.canReach = completedPath.canReach();
-
-			this.pathFunction = null;
 
 			this.ready = true;
 
@@ -123,13 +129,10 @@ public final class AsyncPath extends Path {
 			return;
 		}
 
-		Path computed = this.computedPath;
+		Path computed = this.computedPath.get();
 		if (computed == null) {
-			synchronized (finder) {
-				if ((computed = this.computedPath) == null) {
-					computed = (this.computedPath = Objects.requireNonNull(pathFunction).apply(finder));
-				}
-			}
+			computePath();
+			computed = Objects.requireNonNull(this.computedPath.get());
 		}
 
 		complete(computed);
@@ -141,7 +144,7 @@ public final class AsyncPath extends Path {
 			return true;
 		}
 
-		Path computed = this.computedPath;
+		Path computed = this.computedPath.get();
 		if (computed != null) {
 			complete(computed);
 			return true;
@@ -194,7 +197,7 @@ public final class AsyncPath extends Path {
 	@Override
 	public boolean isDone() {
 		if (!this.ready) {
-			Path computed = this.computedPath;
+			Path computed = this.computedPath.get();
 			if (computed != null) {
 				complete(computed);
 			}
@@ -297,9 +300,14 @@ public final class AsyncPath extends Path {
 	public static void applyAfterProcessing(@Nullable Path path,
 											@NotNull Consumer<@Nullable Path> callback) {
 		if (path instanceof AsyncPath asyncPath && !asyncPath.isProcessed()) {
-			asyncPath.applyAfterProcessing(processedPath ->
-				MinecraftServer.getServer().scheduleOnMain(() -> callback.accept(processedPath))
-			);
+			asyncPath.applyAfterProcessing(processedPath -> {
+				MinecraftServer server = MinecraftServer.getServer();
+				if (Thread.currentThread() == server.getRunningThread()) {
+					callback.accept(processedPath);
+				} else {
+					server.scheduleOnMain(() -> callback.accept(processedPath));
+				}
+			});
 		} else {
 			callback.accept(path);
 		}

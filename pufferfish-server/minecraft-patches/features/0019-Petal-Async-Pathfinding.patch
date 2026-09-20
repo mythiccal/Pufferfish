@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 07b9a47d10006dc9bbac96bfdf03ad1a28d7bf45 Mon Sep 17 00:00:00 2001
 From: mythiccal <cwood2014.cw@gmail.com>
 Date: Sat, 19 Sep 2026 15:11:04 +0100
 Subject: [PATCH] Petal: Async Pathfinding
@@ -8,9 +8,37 @@ Based on Petal (https://github.com/Bloom-host/Petal) and DivineMC.
 Licensed under GPL-3.0.
 
 Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ net/minecraft/server/MinecraftServer.java     |  1 +
+ .../world/entity/ai/behavior/AcquirePoi.java  | 62 +++++++++---
+ .../entity/ai/behavior/MoveToTargetSink.java  | 98 ++++++++++++++++---
+ .../behavior/SetClosestHomeAsWalkTarget.java  | 51 ++++++++--
+ .../entity/ai/goal/DoorInteractGoal.java      |  2 +-
+ .../navigation/AmphibiousPathNavigation.java  | 16 +++
+ .../ai/navigation/FlyingPathNavigation.java   | 17 ++++
+ .../ai/navigation/GroundPathNavigation.java   | 16 +++
+ .../entity/ai/navigation/PathNavigation.java  | 52 ++++++++--
+ .../navigation/WaterBoundPathNavigation.java  | 16 +++
+ .../entity/ai/sensing/NearestBedSensor.java   | 38 +++++--
+ .../world/entity/animal/bee/Bee.java          |  4 +-
+ .../world/entity/animal/frog/Frog.java        | 16 +++
+ .../world/entity/animal/rabbit/Rabbit.java    |  8 ++
+ .../world/entity/monster/Strider.java         | 16 +++
+ .../entity/monster/creaking/Creaking.java     | 16 +++
+ .../world/entity/monster/warden/Warden.java   | 10 ++
+ .../world/entity/monster/zombie/Drowned.java  |  2 +-
+ .../pathfinder/AmphibiousNodeEvaluator.java   | 19 +---
+ .../level/pathfinder/FlyNodeEvaluator.java    |  4 +-
+ .../world/level/pathfinder/NodeEvaluator.java | 48 +++++++++
+ .../world/level/pathfinder/Path.java          | 16 ++-
+ .../world/level/pathfinder/PathFinder.java    | 91 +++++++++++++----
+ .../level/pathfinder/PathfindingContext.java  |  8 +-
+ .../level/pathfinder/SwimNodeEvaluator.java   |  8 +-
+ .../level/pathfinder/WalkNodeEvaluator.java   | 27 +++--
+ 26 files changed, 557 insertions(+), 105 deletions(-)
 
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 0e3be68f0764a66fa63c7a737f5217957205688d..a6fcb73ab404454e1b478990afe62f20670a19e9 100644
+index 0e3be68..a6fcb73 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
 @@ -1079,6 +1079,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
@@ -22,7 +50,7 @@ index 0e3be68f0764a66fa63c7a737f5217957205688d..a6fcb73ab404454e1b478990afe62f20
              io.papermc.paper.util.MCUtil.ASYNC_EXECUTOR.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS); // Paper
          } catch (InterruptedException _) {} // Paper
 diff --git a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
-index e2eb02d8a0a9481be2308c9052582591bc4f9850..65584cbe5743483975ff2f891871e3162863138d 100644
+index e2eb02d..6842fb9 100644
 --- a/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 +++ b/net/minecraft/world/entity/ai/behavior/AcquirePoi.java
 @@ -58,11 +58,23 @@ public class AcquirePoi {
@@ -76,7 +104,7 @@ index e2eb02d8a0a9481be2308c9052582591bc4f9850..65584cbe5743483975ff2f891871e316
  
                          return true;
                      }
-@@ -129,6 +134,36 @@ public class AcquirePoi {
+@@ -129,6 +134,37 @@ public class AcquirePoi {
              : BehaviorBuilder.create(i -> i.group(i.absent(memoryToValidate)).apply(i, toValidate -> acquirePoi));
      }
  
@@ -95,18 +123,19 @@ index e2eb02d8a0a9481be2308c9052582591bc4f9850..65584cbe5743483975ff2f891871e316
 +                                        final @Nullable Path path) {
 +        if (path != null && path.canReach()) {
 +            BlockPos targetPos = path.getTarget();
-+            poiManager.getType(targetPos).ifPresent(type -> {
-+                poiManager.take(poiType, (t, poiPos) -> poiPos.equals(targetPos), targetPos, 1);
++            if (poiManager.getType(targetPos).isPresent()
++                && poiManager.take(poiType, (type, poiPos) -> poiPos.equals(targetPos), targetPos, 1).isPresent()) {
 +                toAcquire.set(GlobalPos.of(level.dimension(), targetPos));
 +                onPoiAcquisitionEvent.ifPresent(event -> level.broadcastEntityEvent(body, event));
 +                batchCache.clear();
 +                level.debugSynchronizers().updatePoi(targetPos);
-+            });
-+        } else {
-+            for (Pair<Holder<PoiType>, BlockPos> p : poiPositions) {
-+                batchCache.computeIfAbsent(p.getSecond().asLong(), key -> new JitteredLinearRetry(level.getRandom(), timestamp));
++                return;
 +            }
 +        }
++
++		for (Pair<Holder<PoiType>, BlockPos> candidate : poiPositions) {
++			batchCache.computeIfAbsent(candidate.getSecond().asLong(), key -> new JitteredLinearRetry(level.getRandom(), timestamp));
++		}
 +    }
 +    // Pufferfish end - Async Pathfinding
 +
@@ -114,7 +143,7 @@ index e2eb02d8a0a9481be2308c9052582591bc4f9850..65584cbe5743483975ff2f891871e316
          if (pois.isEmpty()) {
              return null;
 diff --git a/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java b/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
-index b40da004b5281a041ee896ae176bfb9c4660f353..db29c315ceba91c669c53a3091fac5499917273f 100644
+index b40da00..867d46f 100644
 --- a/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
 +++ b/net/minecraft/world/entity/ai/behavior/MoveToTargetSink.java
 @@ -20,6 +20,7 @@ public class MoveToTargetSink extends Behavior<Mob> {
@@ -188,7 +217,7 @@ index b40da004b5281a041ee896ae176bfb9c4660f353..db29c315ceba91c669c53a3091fac549
 +                    brain.setMemory(MemoryModuleType.CANT_REACH_WALK_TARGET_SINCE, timestamp);
 +                }
 +
-+                if (!canReach) {
++                if (this.path == null) {
 +                    Optional<WalkTarget> walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET);
 +
 +                    if (!walkTarget.isPresent()) return;
@@ -256,7 +285,7 @@ index b40da004b5281a041ee896ae176bfb9c4660f353..db29c315ceba91c669c53a3091fac549
      private boolean tryComputePath(final Mob body, final WalkTarget walkTarget, final long timestamp) {
          BlockPos targetPos = walkTarget.getTarget().currentBlockPosition();
 diff --git a/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java b/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
-index 5bd7473b0db1a87f905c01c19ddf99e3a447bcfa..a7702a5b67f7a82909af84b6dd884cabe011e34f 100644
+index 5bd7473..a7702a5 100644
 --- a/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
 +++ b/net/minecraft/world/entity/ai/behavior/SetClosestHomeAsWalkTarget.java
 @@ -29,11 +29,23 @@ public class SetClosestHomeAsWalkTarget {
@@ -336,7 +365,7 @@ index 5bd7473b0db1a87f905c01c19ddf99e3a447bcfa..a7702a5b67f7a82909af84b6dd884cab
 +    // Pufferfish end - Async Pathfinding
  }
 diff --git a/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java b/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
-index 0b383b16145d44e5dc29b8de123546656b4793dd..39c33634e892e10e031d24a99f9a119cca3d4539 100644
+index 0b383b1..39c3363 100644
 --- a/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
 +++ b/net/minecraft/world/entity/ai/goal/DoorInteractGoal.java
 @@ -57,7 +57,7 @@ public abstract class DoorInteractGoal extends Goal {
@@ -349,7 +378,7 @@ index 0b383b16145d44e5dc29b8de123546656b4793dd..39c33634e892e10e031d24a99f9a119c
                  Node node = path.getNode(i);
                  this.doorPos = new BlockPos(node.x, node.y + 1, node.z);
 diff --git a/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java b/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
-index 45942481a972f2308eae80f6f0f8b886e47016ec..cdbb5b8c8279c01ae2ab7e717c07632984af8209 100644
+index 4594248..cdbb5b8 100644
 --- a/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/AmphibiousPathNavigation.java
 @@ -12,9 +12,25 @@ public class AmphibiousPathNavigation extends PathNavigation {
@@ -379,7 +408,7 @@ index 45942481a972f2308eae80f6f0f8b886e47016ec..cdbb5b8c8279c01ae2ab7e717c076329
      }
  
 diff --git a/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java b/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
-index e44814cfb6afb594456b8215bd13a92e93de2c85..dfb97f76c7173093f6b1a27d49dbfecb358a7d06 100644
+index e44814c..dfb97f7 100644
 --- a/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/FlyingPathNavigation.java
 @@ -15,9 +15,25 @@ public class FlyingPathNavigation extends PathNavigation {
@@ -417,7 +446,7 @@ index e44814cfb6afb594456b8215bd13a92e93de2c85..dfb97f76c7173093f6b1a27d49dbfecb
          if (!this.isDone()) {
              if (this.canUpdatePath()) {
 diff --git a/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java b/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
-index de82fe68fabd0a0c1b425cb0ba7b2e244cfc8eb8..c0edab13ab5a304308792b3c0e0c96a67b858e1c 100644
+index de82fe6..c0edab1 100644
 --- a/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/GroundPathNavigation.java
 @@ -24,9 +24,25 @@ public class GroundPathNavigation extends PathNavigation {
@@ -447,7 +476,7 @@ index de82fe68fabd0a0c1b425cb0ba7b2e244cfc8eb8..c0edab13ab5a304308792b3c0e0c96a6
      }
  
 diff --git a/net/minecraft/world/entity/ai/navigation/PathNavigation.java b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
-index 862224dfc003bf02ee0d7c1d804549210d6c8ffa..069bedae5f0c399a872a10b8648cd9c44cfb51fb 100644
+index 862224d..f1cba7f 100644
 --- a/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/PathNavigation.java
 @@ -167,6 +167,12 @@ public abstract class PathNavigation {
@@ -499,18 +528,29 @@ index 862224dfc003bf02ee0d7c1d804549210d6c8ffa..069bedae5f0c399a872a10b8648cd9c4
  
          return path;
      }
-@@ -251,8 +275,8 @@ public abstract class PathNavigation {
+@@ -251,10 +275,18 @@ public abstract class PathNavigation {
              return false;
          }
  
 -        this.trimPath();
 -        if (this.path.getNodeCount() <= 0) {
-+        if (newPath.isProcessed()) this.trimPath(); // Pufferfish - only trim if processed
-+        if (newPath.isProcessed() && this.path.getNodeCount() <= 0) { // Pufferfish - only check node count if processed
-             return false;
+-            return false;
++        // Pufferfish start - Async Pathfinding - trim before a completed path can be followed
++        if (newPath.isProcessed()) {
++            this.trimPath();
++            if (this.path.getNodeCount() <= 0) return false;
++        } else {
++            gg.pufferfish.pufferfish.async.pathfinding.AsyncPath.applyAfterProcessing(newPath, processedPath -> {
++                if (this.path != processedPath) return;
++                this.trimPath();
++                if (this.path.getNodeCount() <= 0) this.path = null;
++            });
          }
++        // Pufferfish end - Async Pathfinding
  
-@@ -272,6 +296,7 @@ public abstract class PathNavigation {
+         this.speedModifier = speedModifier;
+         Vec3 mobPos = this.getTempMobPos();
+@@ -272,6 +304,7 @@ public abstract class PathNavigation {
          if (this.hasDelayedRecomputation) {
              this.recomputePath();
          }
@@ -518,7 +558,7 @@ index 862224dfc003bf02ee0d7c1d804549210d6c8ffa..069bedae5f0c399a872a10b8648cd9c4
  
          if (!this.isDone()) {
              if (this.canUpdatePath()) {
-@@ -297,6 +322,7 @@ public abstract class PathNavigation {
+@@ -297,6 +330,7 @@ public abstract class PathNavigation {
      }
  
      protected void followThePath() {
@@ -526,7 +566,7 @@ index 862224dfc003bf02ee0d7c1d804549210d6c8ffa..069bedae5f0c399a872a10b8648cd9c4
          Vec3 mobPos = this.getTempMobPos();
          this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
          Vec3i currentNodePos = this.path.getNextNodePos();
-@@ -457,7 +483,7 @@ public abstract class PathNavigation {
+@@ -457,7 +491,7 @@ public abstract class PathNavigation {
      public boolean shouldRecomputePath(final BlockPos pos) {
          if (this.hasDelayedRecomputation) {
              return false;
@@ -536,7 +576,7 @@ index 862224dfc003bf02ee0d7c1d804549210d6c8ffa..069bedae5f0c399a872a10b8648cd9c4
              Vec3 middlePos = new Vec3((target.x + this.mob.getX()) / 2.0, (target.y + this.mob.getY()) / 2.0, (target.z + this.mob.getZ()) / 2.0);
              return pos.closerToCenterThan(middlePos, this.path.getNodeCount() - this.path.getNextNodeIndex());
 diff --git a/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java b/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
-index 87ccac321c3a087158602d87e4d05b3273545cf1..dc30691fddaa6cd5322ae2170db5e17b65acbdc1 100644
+index 87ccac3..dc30691 100644
 --- a/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
 +++ b/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
 @@ -15,11 +15,27 @@ public class WaterBoundPathNavigation extends PathNavigation {
@@ -568,7 +608,7 @@ index 87ccac321c3a087158602d87e4d05b3273545cf1..dc30691fddaa6cd5322ae2170db5e17b
      }
  
 diff --git a/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java b/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
-index 55940fbe5c6e88b27c4322cea6d971d15dfa196a..764d4dde6b82c846f5009a7ac26d4e222dc29530 100644
+index 55940fb..764d4dd 100644
 --- a/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
 +++ b/net/minecraft/world/entity/ai/sensing/NearestBedSensor.java
 @@ -26,6 +26,7 @@ public class NearestBedSensor extends Sensor<Mob> {
@@ -632,7 +672,7 @@ index 55940fbe5c6e88b27c4322cea6d971d15dfa196a..764d4dde6b82c846f5009a7ac26d4e22
 +    // Pufferfish end - Async Pathfinding
  }
 diff --git a/net/minecraft/world/entity/animal/bee/Bee.java b/net/minecraft/world/entity/animal/bee/Bee.java
-index 525280c15e8ac32c9fdcf0c62ff1343f5aeaddcd..1b17d3180c9efd6c478a54a141a72807cb33312a 100644
+index 525280c..a2228a2 100644
 --- a/net/minecraft/world/entity/animal/bee/Bee.java
 +++ b/net/minecraft/world/entity/animal/bee/Bee.java
 @@ -853,7 +853,7 @@ public class Bee extends Animal implements NeutralMob {
@@ -640,7 +680,7 @@ index 525280c15e8ac32c9fdcf0c62ff1343f5aeaddcd..1b17d3180c9efd6c478a54a141a72807
                              Bee.this.pathfindRandomlyTowards(Bee.this.hivePos);
                          }
 -                    } else {
-+                    } else if (Bee.this.navigation.getPath() != null && Bee.this.navigation.getPath().isProcessed()) { // Pufferfish - check processing
++                    } else if (Bee.this.navigation.getPath() == null || Bee.this.navigation.getPath().isProcessed()) { // Pufferfish - check processing
                          boolean canReachAllTheWayToTarget = this.pathfindDirectlyTowards(Bee.this.hivePos);
                          if (!canReachAllTheWayToTarget) {
                              this.dropAndBlacklistHive();
@@ -654,7 +694,7 @@ index 525280c15e8ac32c9fdcf0c62ff1343f5aeaddcd..1b17d3180c9efd6c478a54a141a72807
      }
  
 diff --git a/net/minecraft/world/entity/animal/frog/Frog.java b/net/minecraft/world/entity/animal/frog/Frog.java
-index 75a2e71e818e7e35c38ef3449694f844722a250a..d67d39a550ff6b45d5858a827f6aede46d8a2889 100644
+index 75a2e71..d67d39a 100644
 --- a/net/minecraft/world/entity/animal/frog/Frog.java
 +++ b/net/minecraft/world/entity/animal/frog/Frog.java
 @@ -386,6 +386,17 @@ public class Frog extends Animal {
@@ -688,7 +728,7 @@ index 75a2e71e818e7e35c38ef3449694f844722a250a..d67d39a550ff6b45d5858a827f6aede4
          }
      }
 diff --git a/net/minecraft/world/entity/animal/rabbit/Rabbit.java b/net/minecraft/world/entity/animal/rabbit/Rabbit.java
-index 3cdfde73d965e50b00355547e54429fd4afe5ce3..9c3e692853e4fb8e268c3f18fdabc31ffc77ff5b 100644
+index 3cdfde7..9c3e692 100644
 --- a/net/minecraft/world/entity/animal/rabbit/Rabbit.java
 +++ b/net/minecraft/world/entity/animal/rabbit/Rabbit.java
 @@ -556,6 +556,14 @@ public class Rabbit extends Animal {
@@ -707,7 +747,7 @@ index 3cdfde73d965e50b00355547e54429fd4afe5ce3..9c3e692853e4fb8e268c3f18fdabc31f
                  this.mob.setSpeedModifier(0.0);
              } else if (this.hasWanted() || this.operation == MoveControl.Operation.JUMPING) {
 diff --git a/net/minecraft/world/entity/monster/Strider.java b/net/minecraft/world/entity/monster/Strider.java
-index 0fbbe892217a5b894a2132439cc44e07fed78d8b..b7b84fee6190bf232187f0129e1474590cb7f22f 100644
+index 0fbbe89..b7b84fe 100644
 --- a/net/minecraft/world/entity/monster/Strider.java
 +++ b/net/minecraft/world/entity/monster/Strider.java
 @@ -525,9 +525,25 @@ public class Strider extends Animal implements ItemSteerable {
@@ -737,7 +777,7 @@ index 0fbbe892217a5b894a2132439cc44e07fed78d8b..b7b84fee6190bf232187f0129e147459
          }
  
 diff --git a/net/minecraft/world/entity/monster/creaking/Creaking.java b/net/minecraft/world/entity/monster/creaking/Creaking.java
-index 22ea080d8c793c8c1bb9163808271c28d48dd302..de0df5427f0a183a51bb504c181a31318f1f8c24 100644
+index 22ea080..de0df54 100644
 --- a/net/minecraft/world/entity/monster/creaking/Creaking.java
 +++ b/net/minecraft/world/entity/monster/creaking/Creaking.java
 @@ -579,6 +579,17 @@ public class Creaking extends Monster {
@@ -771,7 +811,7 @@ index 22ea080d8c793c8c1bb9163808271c28d48dd302..de0df5427f0a183a51bb504c181a3131
          }
      }
 diff --git a/net/minecraft/world/entity/monster/warden/Warden.java b/net/minecraft/world/entity/monster/warden/Warden.java
-index 8705b1d2140d1a55513d8ef46a20ff615db85dea..5e48f06f029546e476fc8f3802a68ac537efe238 100644
+index 8705b1d..5e48f06 100644
 --- a/net/minecraft/world/entity/monster/warden/Warden.java
 +++ b/net/minecraft/world/entity/monster/warden/Warden.java
 @@ -561,6 +561,16 @@ public class Warden extends Monster implements VibrationSystem {
@@ -792,7 +832,7 @@ index 8705b1d2140d1a55513d8ef46a20ff615db85dea..5e48f06f029546e476fc8f3802a68ac5
                      @Override
                      protected float distance(final Node from, final Node to) {
 diff --git a/net/minecraft/world/entity/monster/zombie/Drowned.java b/net/minecraft/world/entity/monster/zombie/Drowned.java
-index b04b2192de1f018f9cf873e0377863a18d945167..e7d9e09721fd85c104c9768eafedf4a0505c507b 100644
+index b04b219..e7d9e09 100644
 --- a/net/minecraft/world/entity/monster/zombie/Drowned.java
 +++ b/net/minecraft/world/entity/monster/zombie/Drowned.java
 @@ -263,7 +263,7 @@ public class Drowned extends Zombie implements RangedAttackMob {
@@ -804,11 +844,102 @@ index b04b2192de1f018f9cf873e0377863a18d945167..e7d9e09721fd85c104c9768eafedf4a0
              BlockPos pos = path.getTarget();
              if (pos != null) {
                  double sqrDistToNextPos = this.distanceToSqr(pos.getX(), pos.getY(), pos.getZ());
+diff --git a/net/minecraft/world/level/pathfinder/AmphibiousNodeEvaluator.java b/net/minecraft/world/level/pathfinder/AmphibiousNodeEvaluator.java
+index 21d969b..b31d794 100644
+--- a/net/minecraft/world/level/pathfinder/AmphibiousNodeEvaluator.java
++++ b/net/minecraft/world/level/pathfinder/AmphibiousNodeEvaluator.java
+@@ -9,8 +9,6 @@ import org.jspecify.annotations.Nullable;
+ 
+ public class AmphibiousNodeEvaluator extends WalkNodeEvaluator {
+     private final boolean prefersShallowSwimming;
+-    private float oldWalkableCost;
+-    private float oldWaterBorderCost;
+ 
+     public AmphibiousNodeEvaluator(final boolean prefersShallowSwimming) {
+         this.prefersShallowSwimming = prefersShallowSwimming;
+@@ -19,18 +17,9 @@ public class AmphibiousNodeEvaluator extends WalkNodeEvaluator {
+     @Override
+     public void prepare(final PathNavigationRegion level, final Mob entity) {
+         super.prepare(level, entity);
+-        entity.setPathfindingMalus(PathType.WATER, 0.0F);
+-        this.oldWalkableCost = entity.getPathfindingMalus(PathType.WALKABLE);
+-        entity.setPathfindingMalus(PathType.WALKABLE, 6.0F);
+-        this.oldWaterBorderCost = entity.getPathfindingMalus(PathType.WATER_BORDER);
+-        entity.setPathfindingMalus(PathType.WATER_BORDER, 4.0F);
+-    }
+-
+-    @Override
+-    public void done() {
+-        this.mob.setPathfindingMalus(PathType.WALKABLE, this.oldWalkableCost);
+-        this.mob.setPathfindingMalus(PathType.WATER_BORDER, this.oldWaterBorderCost);
+-        super.done();
++        this.setPathfindingMalusOverride(PathType.WATER, 0.0F);
++        this.setPathfindingMalusOverride(PathType.WALKABLE, 6.0F);
++        this.setPathfindingMalusOverride(PathType.WATER_BORDER, 4.0F);
+     }
+ 
+     @Override
+@@ -55,7 +44,7 @@ public class AmphibiousNodeEvaluator extends WalkNodeEvaluator {
+         PathType blockPathTypeAbove = this.getCachedPathType(pos.x, pos.y + 1, pos.z);
+         PathType blockPathTypeCurrent = this.getCachedPathType(pos.x, pos.y, pos.z);
+         int jumpSize;
+-        if (this.mob.getPathfindingMalus(blockPathTypeAbove) >= 0.0F && blockPathTypeCurrent != PathType.STICKY_HONEY) {
++        if (this.getPathfindingMalus(blockPathTypeAbove) >= 0.0F && blockPathTypeCurrent != PathType.STICKY_HONEY) {
+             jumpSize = Mth.floor(Math.max(1.0F, this.mob.maxUpStep()));
+         } else {
+             jumpSize = 0;
+diff --git a/net/minecraft/world/level/pathfinder/FlyNodeEvaluator.java b/net/minecraft/world/level/pathfinder/FlyNodeEvaluator.java
+index 9598526..4bb6f6a 100644
+--- a/net/minecraft/world/level/pathfinder/FlyNodeEvaluator.java
++++ b/net/minecraft/world/level/pathfinder/FlyNodeEvaluator.java
+@@ -64,7 +64,7 @@ public class FlyNodeEvaluator extends WalkNodeEvaluator {
+     @Override
+     protected boolean canStartAt(final BlockPos pos) {
+         PathType blockPathType = this.getCachedPathType(pos.getX(), pos.getY(), pos.getZ());
+-        return this.mob.getPathfindingMalus(blockPathType) >= 0.0F;
++        return this.getPathfindingMalus(blockPathType) >= 0.0F;
+     }
+ 
+     @Override
+@@ -267,7 +267,7 @@ public class FlyNodeEvaluator extends WalkNodeEvaluator {
+     protected @Nullable Node findAcceptedNode(final int x, final int y, final int z) {
+         Node best = null;
+         PathType pathType = this.getCachedPathType(x, y, z);
+-        float pathCost = this.mob.getPathfindingMalus(pathType);
++        float pathCost = this.getPathfindingMalus(pathType);
+         if (pathCost >= 0.0F) {
+             best = this.getNode(x, y, z);
+             best.type = pathType;
 diff --git a/net/minecraft/world/level/pathfinder/NodeEvaluator.java b/net/minecraft/world/level/pathfinder/NodeEvaluator.java
-index f4a30761483c4032b5942f84df7706b10976cb5d..bb7d73f5b6c719ac62f210ac07fa221e0e817c62 100644
+index f4a3076..912df6f 100644
 --- a/net/minecraft/world/level/pathfinder/NodeEvaluator.java
 +++ b/net/minecraft/world/level/pathfinder/NodeEvaluator.java
-@@ -37,6 +37,18 @@ public abstract class NodeEvaluator {
+@@ -11,6 +11,8 @@ import net.minecraft.world.level.block.Blocks;
+ import net.minecraft.world.level.block.CampfireBlock;
+ import net.minecraft.world.level.block.state.BlockState;
+ 
++import java.util.EnumMap;
++
+ public abstract class NodeEvaluator {
+     protected PathfindingContext currentContext;
+     protected Mob mob;
+@@ -22,11 +24,15 @@ public abstract class NodeEvaluator {
+     protected boolean canOpenDoors;
+     protected boolean canFloat;
+     protected boolean canWalkOverFences;
++    private final EnumMap<PathType, Float> pathfindingMalusOverrides = new EnumMap<>(PathType.class); // Pufferfish - Async Pathfinding
++    private EnumMap<PathType, Float> asyncPathfindingMalus; // Pufferfish - Async Pathfinding
+ 
+     public void prepare(final PathNavigationRegion level, final Mob entity) {
+         this.currentContext = new PathfindingContext(level, entity);
+         this.mob = entity;
+         this.nodes.clear();
++        this.pathfindingMalusOverrides.clear(); // Pufferfish - Async Pathfinding
++        this.asyncPathfindingMalus = null; // Pufferfish - Async Pathfinding
+         this.entityWidth = Mth.floor(entity.getBbWidth() + 1.0F);
+         this.entityHeight = Mth.floor(entity.getBbHeight() + 1.0F);
+         this.entityDepth = Mth.floor(entity.getBbWidth() + 1.0F);
+@@ -37,6 +43,48 @@ public abstract class NodeEvaluator {
          this.mob = null;
      }
  
@@ -822,13 +953,43 @@ index f4a30761483c4032b5942f84df7706b10976cb5d..bb7d73f5b6c719ac62f210ac07fa221e
 +    public void clearNodes() {
 +        this.nodes.clear();
 +    }
++
++    protected final float getPathfindingMalus(final PathType pathType) {
++        if (this.asyncPathfindingMalus != null) return this.asyncPathfindingMalus.get(pathType);
++        return this.pathfindingMalusOverrides.getOrDefault(pathType, this.mob.getPathfindingMalus(pathType));
++    }
++
++    protected final void setPathfindingMalusOverride(final PathType pathType, final float malus) {
++        this.pathfindingMalusOverrides.put(pathType, malus);
++    }
++
++    public final void prepareForAsync() {
++        final EnumMap<PathType, Float> pathfindingMalus = new EnumMap<>(PathType.class);
++        for (PathType pathType : PathType.values()) {
++            pathfindingMalus.put(pathType, this.getPathfindingMalus(pathType));
++        }
++        this.asyncPathfindingMalus = pathfindingMalus;
++        this.restoreMobAfterAsyncPreparation();
++    }
++
++    protected void restoreMobAfterAsyncPreparation() {
++    }
++
++    public final void doneForAsync() {
++        this.clearCache();
++        this.clearNodes();
++        this.pathfindingMalusOverrides.clear();
++        this.asyncPathfindingMalus = null;
++        this.currentContext = null;
++        this.mob = null;
++    }
 +    // Pufferfish end - Async Pathfinding
 +
      protected Node getNode(final BlockPos pos) {
          return this.getNode(pos.getX(), pos.getY(), pos.getZ());
      }
 diff --git a/net/minecraft/world/level/pathfinder/Path.java b/net/minecraft/world/level/pathfinder/Path.java
-index ce536d07512c3cb9a8f56a1c4f6506db50161f8b..4cbaa8ab10a38d77301f8646da9942a561480a67 100644
+index ce536d0..4cbaa8a 100644
 --- a/net/minecraft/world/level/pathfinder/Path.java
 +++ b/net/minecraft/world/level/pathfinder/Path.java
 @@ -11,9 +11,9 @@ import net.minecraft.world.entity.Entity;
@@ -870,7 +1031,7 @@ index ce536d07512c3cb9a8f56a1c4f6506db50161f8b..4cbaa8ab10a38d77301f8646da9942a5
      }
  
 diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
-index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1aa4946cb 100644
+index 253074a..4fc9c3b 100644
 --- a/net/minecraft/world/level/pathfinder/PathFinder.java
 +++ b/net/minecraft/world/level/pathfinder/PathFinder.java
 @@ -19,6 +19,8 @@ import net.minecraft.world.entity.Mob;
@@ -903,7 +1064,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
  
      public void setCaptureDebug(final BooleanSupplier captureDebug) {
          this.captureDebug = captureDebug;
-@@ -48,27 +58,96 @@ public class PathFinder {
+@@ -48,27 +58,70 @@ public class PathFinder {
          final int reachRange,
          final float maxVisitedNodesMultiplier
      ) {
@@ -945,51 +1106,25 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
 +
 +        final int maxVisitedNodes = this.maxVisitedNodes;
 +        final BooleanSupplier captureDebug = this.captureDebug;
-+        final PathNavigationRegion regionCapture = level;
-+        final Mob mobCapture = entity;
-+        final NodeEvaluatorGenerator generatorCapture = this.nodeEvaluatorGenerator;
-+
-+        final int nodeEvaluatorFeatures = gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorFeatures.fromNodeEvaluator(nodeEvaluator);
-+
-+        nodeEvaluator.done();
-+        gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.returnNodeEvaluator(nodeEvaluator);
++		nodeEvaluator.prepareForAsync();
 +
 +        return new gg.pufferfish.pufferfish.async.pathfinding.AsyncPath(this, Lists.newArrayList(), targets, finder -> {
-+            NodeEvaluator asyncEvaluator = generatorCapture.generate(
-+                gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorFeatures.unpack(nodeEvaluatorFeatures)
-+            );
-+
 +            try {
-+                asyncEvaluator.prepare(regionCapture, mobCapture);
-+                asyncEvaluator.clearCache();
-+
-+                Node asyncStart = asyncEvaluator.getStart();
-+                if (asyncStart == null) {
-+                    return new Path(Lists.newArrayList(), targets.iterator().next(), false);
-+                }
-+
-+                List<Map.Entry<Target, BlockPos>> asyncTos = Lists.newArrayList();
-+                for (BlockPos pos : targets) {
-+                    asyncTos.add(new java.util.AbstractMap.SimpleEntry<>(
-+                        asyncEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos
-+                    ));
-+                }
-+
 +                return finder.findPath(
-+                    asyncEvaluator,
++                    nodeEvaluator,
 +                    gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.HEAP_LOCAL.get(),
 +                    gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.NEIGHBORS_LOCAL.get(),
 +                    maxVisitedNodes,
 +                    captureDebug,
-+                    asyncStart,
-+                    asyncTos,
++                    from,
++                    tos,
 +                    maxPathLength,
 +                    reachRange,
 +                    maxVisitedNodesMultiplier
 +                );
 +            } finally {
-+                asyncEvaluator.done();
-+                asyncEvaluator.clearNodes();
++                nodeEvaluator.doneForAsync();
++                gg.pufferfish.pufferfish.async.pathfinding.NodeEvaluatorCache.removeNodeEvaluator(nodeEvaluator);
 +            }
 +        });
 +        // Pufferfish end - Async Pathfinding
@@ -1007,7 +1142,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
          ProfilerFiller profiler = Profiler.get();
          profiler.push("find_path");
          profiler.markForCharting(MetricCategory.PATH_FINDING);
-@@ -76,20 +155,20 @@ public class PathFinder {
+@@ -76,20 +129,20 @@ public class PathFinder {
          from.g = 0.0F;
          from.h = this.getBestH(from, targets);
          from.f = from.h;
@@ -1034,7 +1169,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
              current.closed = true;
  
              // Paper start - Perf: remove streams and optimize collection
-@@ -112,10 +191,10 @@ public class PathFinder {
+@@ -112,10 +165,10 @@ public class PathFinder {
              }
  
              if (!(current.distanceTo(from) >= maxPathLength)) {
@@ -1047,7 +1182,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
                      float distance = this.distance(current, neighbor);
                      neighbor.walkedDistance = current.walkedDistance + distance;
                      float tentativeGScore = current.g + distance + neighbor.costMalus;
-@@ -124,10 +203,10 @@ public class PathFinder {
+@@ -124,10 +177,10 @@ public class PathFinder {
                          neighbor.g = tentativeGScore;
                          neighbor.h = this.getBestH(neighbor, targets) * 1.5F;
                          if (neighbor.inOpenSet()) {
@@ -1060,7 +1195,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
                          }
                      }
                  }
-@@ -152,7 +231,7 @@ public class PathFinder {
+@@ -152,7 +205,7 @@ public class PathFinder {
              for(Map.Entry<Target, BlockPos> entry : targets) {
                  set.add(entry.getKey());
              }
@@ -1070,7 +1205,7 @@ index 253074a0a14115cd3d18aaae6fa5822cf32346c9..ecb49051483ae8792a6d7c9230fe9cf1
          return best;
          // Paper end - Perf: remove streams and optimize collection
 diff --git a/net/minecraft/world/level/pathfinder/PathfindingContext.java b/net/minecraft/world/level/pathfinder/PathfindingContext.java
-index 64e1a34de133beccb90486f247e7e74d6535941f..c96841255ac900090a1deda05e8a5851bb0cfbc6 100644
+index 64e1a34..c968412 100644
 --- a/net/minecraft/world/level/pathfinder/PathfindingContext.java
 +++ b/net/minecraft/world/level/pathfinder/PathfindingContext.java
 @@ -9,7 +9,7 @@ import org.jspecify.annotations.Nullable;
@@ -1094,7 +1229,7 @@ index 64e1a34de133beccb90486f247e7e74d6535941f..c96841255ac900090a1deda05e8a5851
 +    // Pufferfish end - Async Pathfinding
  }
 diff --git a/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java b/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
-index e55558448f91410f6174548edc88327191358825..da2b307bb49c9cd7d2c977cb5d0a03302b37d9c6 100644
+index e555584..9effa10 100644
 --- a/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
 +++ b/net/minecraft/world/level/pathfinder/SwimNodeEvaluator.java
 @@ -22,6 +22,12 @@ public class SwimNodeEvaluator extends NodeEvaluator {
@@ -1110,3 +1245,108 @@ index e55558448f91410f6174548edc88327191358825..da2b307bb49c9cd7d2c977cb5d0a0330
      @Override
      public void prepare(final PathNavigationRegion level, final Mob entity) {
          super.prepare(level, entity);
+@@ -86,7 +92,7 @@ public class SwimNodeEvaluator extends NodeEvaluator {
+         Node best = null;
+         PathType pathType = this.getCachedBlockType(x, y, z);
+         if (this.allowBreaching && pathType == PathType.BREACH || pathType == PathType.WATER) {
+-            float pathCost = this.mob.getPathfindingMalus(pathType);
++            float pathCost = this.getPathfindingMalus(pathType);
+             if (pathCost >= 0.0F) {
+                 best = this.getNode(x, y, z);
+                 best.type = pathType;
+diff --git a/net/minecraft/world/level/pathfinder/WalkNodeEvaluator.java b/net/minecraft/world/level/pathfinder/WalkNodeEvaluator.java
+index 4f91849..d9dd270 100644
+--- a/net/minecraft/world/level/pathfinder/WalkNodeEvaluator.java
++++ b/net/minecraft/world/level/pathfinder/WalkNodeEvaluator.java
+@@ -49,6 +49,13 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+         super.done();
+     }
+ 
++    // Pufferfish start - Async Pathfinding
++    @Override
++    protected void restoreMobAfterAsyncPreparation() {
++        this.mob.onPathfindingDone();
++    }
++    // Pufferfish end - Async Pathfinding
++
+     @Override
+     public Node getStart() {
+         BlockPos.MutableBlockPos reusablePos = new BlockPos.MutableBlockPos();
+@@ -103,13 +110,13 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+     protected Node getStartNode(final BlockPos pos) {
+         Node node = this.getNode(pos);
+         node.type = this.getCachedPathType(node.x, node.y, node.z);
+-        node.costMalus = this.mob.getPathfindingMalus(node.type);
++        node.costMalus = this.getPathfindingMalus(node.type);
+         return node;
+     }
+ 
+     protected boolean canStartAt(final BlockPos pos) {
+         PathType blockPathType = this.getCachedPathType(pos.getX(), pos.getY(), pos.getZ());
+-        return blockPathType != PathType.OPEN && this.mob.getPathfindingMalus(blockPathType) >= 0.0F;
++        return blockPathType != PathType.OPEN && this.getPathfindingMalus(blockPathType) >= 0.0F;
+     }
+ 
+     @Override
+@@ -123,7 +130,7 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+         int jumpSize = 0;
+         PathType blockPathTypeAbove = this.getCachedPathType(pos.x, pos.y + 1, pos.z);
+         PathType blockPathTypeCurrent = this.getCachedPathType(pos.x, pos.y, pos.z);
+-        if (this.mob.getPathfindingMalus(blockPathTypeAbove) >= 0.0F && blockPathTypeCurrent != PathType.STICKY_HONEY) {
++        if (this.getPathfindingMalus(blockPathTypeAbove) >= 0.0F && blockPathTypeCurrent != PathType.STICKY_HONEY) {
+             jumpSize = Mth.floor(Math.max(1.0F, this.mob.maxUpStep()));
+         }
+ 
+@@ -239,7 +246,7 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+         }
+ 
+         PathType pathType = this.getCachedPathType(x, y, z);
+-        float pathCost = this.mob.getPathfindingMalus(pathType);
++        float pathCost = this.getPathfindingMalus(pathType);
+         if (pathCost >= 0.0F) {
+             best = this.getNodeAndUpdateCostToMax(x, y, z, pathType, pathCost);
+         }
+@@ -342,7 +349,7 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+                 return best;
+             }
+ 
+-            best = this.getNodeAndUpdateCostToMax(x, y, z, pathTypeLocal, this.mob.getPathfindingMalus(pathTypeLocal));
++            best = this.getNodeAndUpdateCostToMax(x, y, z, pathTypeLocal, this.getPathfindingMalus(pathTypeLocal));
+             y--;
+         }
+ 
+@@ -356,7 +363,7 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+             }
+ 
+             PathType pathType = this.getCachedPathType(x, currentY, z);
+-            float pathCost = this.mob.getPathfindingMalus(pathType);
++            float pathCost = this.getPathfindingMalus(pathType);
+             if (pathType != PathType.OPEN) {
+                 if (pathCost >= 0.0F) {
+                     return this.getNodeAndUpdateCostToMax(x, currentY, z, pathType, pathCost);
+@@ -393,10 +400,10 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+         }
+ 
+         PathType highestMalusPathTypeWithinBB = PathType.BLOCKED;
+-        float highestMalusWithinBB = mob.getPathfindingMalus(highestMalusPathTypeWithinBB);
++        float highestMalusWithinBB = this.getPathfindingMalus(highestMalusPathTypeWithinBB);
+ 
+         for (PathType pathType : blockTypes) {
+-            float malusForPathType = mob.getPathfindingMalus(pathType);
++            float malusForPathType = this.getPathfindingMalus(pathType);
+             if (malusForPathType < 0.0F) {
+                 return pathType;
+             }
+@@ -410,8 +417,8 @@ public class WalkNodeEvaluator extends NodeEvaluator {
+         PathType currentNodePathType = this.getPathType(context, x, y, z);
+         boolean isLargeMob = this.entityWidth > 1;
+         if (isLargeMob) {
+-            boolean isCurrentNodeCheaper = mob.getPathfindingMalus(currentNodePathType) < highestMalusWithinBB;
+-            boolean capMalusDueToCheapNode = isCurrentNodeCheaper && mob.getPathfindingMalus(PathType.BIG_MOBS_CLOSE_TO_DANGER) < highestMalusWithinBB;
++            boolean isCurrentNodeCheaper = this.getPathfindingMalus(currentNodePathType) < highestMalusWithinBB;
++            boolean capMalusDueToCheapNode = isCurrentNodeCheaper && this.getPathfindingMalus(PathType.BIG_MOBS_CLOSE_TO_DANGER) < highestMalusWithinBB;
+             return capMalusDueToCheapNode ? PathType.BIG_MOBS_CLOSE_TO_DANGER : highestMalusPathTypeWithinBB;
+         } else {
+             return currentNodePathType == PathType.OPEN && highestMalusPathTypeWithinBB != PathType.OPEN && highestMalusWithinBB == 0.0F
+-- 
+2.45.1.windows.1
