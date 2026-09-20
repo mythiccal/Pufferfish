@@ -153,6 +153,17 @@ public final class AsyncPath extends Path {
 		return false;
 	}
 
+	@Override
+	public boolean sameAs(@Nullable Path path) {
+		if (path == this) {
+			return true;
+		}
+		if (!this.ready || (path instanceof AsyncPath asyncPath && !asyncPath.ready)) {
+			return false;
+		}
+		return super.sameAs(path);
+	}
+
 	public void applyAfterProcessing(@NotNull Consumer<Path> callback) {
 		synchronized (this.postProcessingCallbacks) {
 			if (!this.ready) {

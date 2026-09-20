@@ -175,7 +175,7 @@ index b40da00..867d46f 100644
          if (this.path != null && this.lastTargetPos != null) {
              Optional<WalkTarget> walkTarget = body.getBrain().getMemory(MemoryModuleType.WALK_TARGET);
              boolean isSpectator = walkTarget.map(MoveToTargetSink::isWalkTargetSpectator).orElse(false);
-@@ -93,27 +97,97 @@ public class MoveToTargetSink extends Behavior<Mob> {
+@@ -93,27 +97,101 @@ public class MoveToTargetSink extends Behavior<Mob> {
  
      @Override
      protected void start(final ServerLevel level, final Mob body, final long timestamp) {
@@ -243,6 +243,10 @@ index b40da00..867d46f 100644
 -                this.start(level, body, timestamp);
 +            Path newPath = body.getNavigation().getPath();
 +            Brain<?> brain = body.getBrain();
++            if (this.path != newPath) {
++                this.path = newPath;
++                brain.setMemory(MemoryModuleType.PATH, newPath);
++            }
 +
 +            if (newPath != null && this.lastTargetPos != null && brain.hasMemoryValue(MemoryModuleType.WALK_TARGET)) {
 +                WalkTarget walkTarget = brain.getMemory(MemoryModuleType.WALK_TARGET).get(); // we know isPresent = true
@@ -566,15 +570,19 @@ index 862224d..f1cba7f 100644
          Vec3 mobPos = this.getTempMobPos();
          this.maxDistanceToWaypoint = this.mob.getBbWidth() > 0.75F ? this.mob.getBbWidth() / 2.0F : 0.75F - this.mob.getBbWidth() / 2.0F;
          Vec3i currentNodePos = this.path.getNextNodePos();
-@@ -457,7 +491,7 @@ public abstract class PathNavigation {
+@@ -457,7 +491,8 @@ public abstract class PathNavigation {
      public boolean shouldRecomputePath(final BlockPos pos) {
++        Path path = this.path; // Pufferfish - retain path while isProcessed() runs completion callbacks
          if (this.hasDelayedRecomputation) {
              return false;
 -        } else if (this.path != null && !this.path.isDone() && this.path.getNodeCount() != 0) {
-+        } else if (this.path != null && this.path.isProcessed() && !this.path.isDone() && this.path.getNodeCount() != 0) { // Pufferfish - Skip if not processed
-             Node target = this.path.getEndNode();
-             Vec3 middlePos = new Vec3((target.x + this.mob.getX()) / 2.0, (target.y + this.mob.getY()) / 2.0, (target.z + this.mob.getZ()) / 2.0);
-             return pos.closerToCenterThan(middlePos, this.path.getNodeCount() - this.path.getNextNodeIndex());
++        } else if (path != null && path.isProcessed() && !path.isDone() && path.getNodeCount() != 0) { // Pufferfish - Skip if not processed
+-            Node target = this.path.getEndNode();
++            Node target = path.getEndNode();
+-            Vec3 middlePos = new Vec3((target.x + this.mob.getX()) / 2.0, (target.y + this.mob.getY()) / 2.0, (target.z + this.mob.getZ()) / 2.0);
++            Vec3 middlePos = new Vec3((target.x + this.mob.getX()) / 2.0, (target.y + this.mob.getY()) / 2.0, (target.z + this.mob.getZ()) / 2.0);
+-            return pos.closerToCenterThan(middlePos, this.path.getNodeCount() - this.path.getNextNodeIndex());
++            return pos.closerToCenterThan(middlePos, path.getNodeCount() - path.getNextNodeIndex());
 diff --git a/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java b/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
 index 87ccac3..dc30691 100644
 --- a/net/minecraft/world/entity/ai/navigation/WaterBoundPathNavigation.java
