@@ -1,6 +1,5 @@
 package gg.pufferfish.pufferfish.async;
 
-import gg.pufferfish.pufferfish.async.pathfinding.AsyncPath;
 import gg.pufferfish.pufferfish.async.tracking.ParallelEntityTracker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,16 +26,6 @@ public class ExecutorShutdown {
 
 			try {
 				ParallelEntityTracker.TRACKER_EXECUTOR.awaitTermination(10L, TimeUnit.SECONDS);
-			} catch (InterruptedException ignored) {
-			}
-		}
-
-		if (AsyncPath.EXECUTOR != null) {
-			LOGGER.info("Shutting down mob pathfinding processing executor...");
-			AsyncPath.EXECUTOR.shutdown();
-
-			try {
-				AsyncPath.EXECUTOR.awaitTermination(10L, TimeUnit.SECONDS);
 			} catch (InterruptedException ignored) {
 			}
 		}

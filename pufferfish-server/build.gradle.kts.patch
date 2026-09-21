@@ -101,7 +101,7 @@
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":pufferfish-api")) // Pufferfish
-     implementation("ca.spottedleaf:leafpile:1.0.0")
+     implementation("ca.spottedleaf:leafpile:1.2.0")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
 @@ -135,6 +_,14 @@
@@ -120,7 +120,7 @@
      runtimeOnly("commons-lang:commons-lang:2.6")
      runtimeOnly("org.xerial:sqlite-jdbc:3.49.1.0")
 @@ -159,6 +_,13 @@
-     implementation("me.lucko:spark-paper:1.10.152")
+     implementation("me.lucko:spark-paper:1.10.180")
  }
  
 +// Pufferfish Start - SIMD Optimizations
@@ -153,7 +153,7 @@
              "Build-Number" to (build ?: ""),
              "Build-Time" to buildTime.toString(),
              "Git-Branch" to gitBranch,
-@@ -237,7 +_,7 @@
+@@ -246,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -162,7 +162,7 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
-@@ -307,12 +_,12 @@
+@@ -317,12 +_,12 @@
  
  tasks.registerRunTask("runBundler") {
      description = "Spin up a test server from the Mojang mapped bundler jar"
@@ -177,7 +177,7 @@
      mainClass.set(null as String?)
  }
  
-@@ -326,7 +_,7 @@
+@@ -336,7 +_,7 @@
  
          downloads {
              register("server:default") {

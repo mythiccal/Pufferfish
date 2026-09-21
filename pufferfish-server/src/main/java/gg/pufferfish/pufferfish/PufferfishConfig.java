@@ -1,6 +1,5 @@
 package gg.pufferfish.pufferfish;
 
-import gg.pufferfish.pufferfish.async.pathfinding.PathfindTaskRejectPolicy;
 import gg.pufferfish.pufferfish.simd.SIMDDetection;
 import java.io.File;
 import java.io.IOException;
@@ -321,12 +320,6 @@ public class PufferfishConfig {
         setComment("misc", "Settings for things that don't belong elsewhere");
     }
 
-	public static boolean enableAsyncPathfinding;
-	public static int asyncPathfindingMaxThreads;
-	public static int asyncPathfindingKeepalive;
-	public static int asyncPathfindingQueueSize;
-	public static PathfindTaskRejectPolicy asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.CALLER_RUNS;
-
 	public static boolean enableParallelEntityTracker;
 	public static int parallelTrackerThreads;
 	public static int parallelTrackerKeepalive;
@@ -336,20 +329,6 @@ public class PufferfishConfig {
 
 	private static boolean asyncSettingsInitialized;
 	private static void asyncSettings() {
-		boolean pathfinding = getBoolean("async.pathfinding.enable", false,
-				"Offloads mob pathfinding to a thread pool. Experimental; requires a restart to take effect.");
-		int pathfindingThreads = getInt("async.pathfinding.max-threads", 1,
-				"Worker threads used for pathfinding.",
-				"0 = a quarter of available cores; negative = all cores minus that many.");
-		int pathfindingKeepalive = getInt("async.pathfinding.keepalive", 60,
-				"Seconds an idle pathfinding worker is kept alive.");
-		int pathfindingQueueSize = getInt("async.pathfinding.queue-size", 0,
-				"Max queued pathfinding tasks. 0 = max-threads * 256.");
-		String rejectPolicyName = getString("async.pathfinding.reject-policy", "CALLER_RUNS",
-				"Policy when the pathfinding queue is full.",
-				"FLUSH_ALL: run all pending tasks on the submitting thread.",
-				"CALLER_RUNS: run only the new task on the submitting thread.");
-
 		boolean tracker = getBoolean("async.parallel-entity-tracker.enable", false,
 				"Runs entity tracker visibility scans and packet diffs on a thread pool.",
 				"Pairing and Bukkit events stay on the tick thread. Experimental; requires a restart.");
@@ -376,20 +355,6 @@ public class PufferfishConfig {
 		asyncSettingsInitialized = true;
 
 		int available = Runtime.getRuntime().availableProcessors();
-
-		enableAsyncPathfinding = pathfinding;
-		asyncPathfindingMaxThreads = resolveThreadCount(pathfindingThreads, available);
-		asyncPathfindingKeepalive = pathfindingKeepalive;
-		asyncPathfindingQueueSize = pathfindingQueueSize <= 0 ? asyncPathfindingMaxThreads * 256 : pathfindingQueueSize;
-		try {
-			asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.valueOf(rejectPolicyName);
-		} catch (IllegalArgumentException ignored) {
-			MinecraftServer.LOGGER.warn("Invalid async pathfinding reject policy {}, using CALLER_RUNS", rejectPolicyName);
-			asyncPathfindingRejectPolicy = PathfindTaskRejectPolicy.CALLER_RUNS;
-		}
-		if (enableAsyncPathfinding) {
-			MinecraftServer.LOGGER.info("Using {} threads for async pathfinding", asyncPathfindingMaxThreads);
-		}
 
 		enableParallelEntityTracker = tracker;
 		parallelTrackerThreads = resolveThreadCount(trackerThreads, available);

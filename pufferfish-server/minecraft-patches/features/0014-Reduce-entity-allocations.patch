@@ -5,10 +5,10 @@ Subject: [PATCH] Reduce entity allocations
 
 
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 7a82a07326c3d523bdeb710b62076a3ad966136d..7cb3ec95e1356e12d679a5fe81e225d5a96d89af 100644
+index 2412a702f6bcc526de0e5c0ab36ddf6cdd1283c5..9ed3a90f9604f4a18cb74eaf1eb2d26ad56c11ed 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -382,6 +382,7 @@ public abstract class Entity
+@@ -383,6 +383,7 @@ public abstract class Entity
      private final int despawnTime; // Paper - entity despawn time limit
      public boolean activatedPriorityReset = false; // Pufferfish - DAB
      public int activatedPriority = gg.pufferfish.pufferfish.PufferfishConfig.maximumActivationPrio; // Pufferfish - DAB (golf score)
