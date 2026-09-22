@@ -1,0 +1,1914 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mythiccal <cwood2014.cw@gmail.com>
+Date: Tue, 22 Sep 2026 16:21:34 +0100
+Subject: [PATCH] Parallel world ticking
+
+Port SparklyPaper parallel world ticking from DivineMC. Each world ticks on its own thread, bounded by a semaphore, and per-world MSPT samples feed the Bukkit tick-time API.
+
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+index 5b7ed8e5067683143c99473a126e17baa531903c..b9201046ca6c17829578ade6a7168bd8c07ee3e0 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+@@ -49,8 +49,10 @@ public final class ChunkEntitySlices {
+ 
+     private final EntityCollectionBySection allEntities;
+     private final EntityCollectionBySection hardCollidingEntities;
+-    private final Reference2ObjectOpenHashMap<Class<? extends Entity>, EntityCollectionBySection> entitiesByClass;
+-    private final Reference2ObjectOpenHashMap<EntityType<?>, EntityCollectionBySection> entitiesByType;
++    // Pufferfish start - Entity Status Lock - copy-on-write lookup maps
++    private volatile Reference2ObjectOpenHashMap<Class<? extends Entity>, EntityCollectionBySection> entitiesByClass;
++    private volatile Reference2ObjectOpenHashMap<EntityType<?>, EntityCollectionBySection> entitiesByType;
++    // Pufferfish end - Entity Status Lock - copy-on-write lookup maps
+     private final EntityList entities = new EntityList();
+ 
+     public FullChunkStatus status;
+@@ -225,11 +227,23 @@ public final class ChunkEntitySlices {
+         }
+     }
+ 
++    // Pufferfish start - Entity Status Lock
++    private final java.util.concurrent.locks.ReentrantLock statusLock = new java.util.concurrent.locks.ReentrantLock();
++    private final java.util.concurrent.locks.ReentrantLock collectionLock = new java.util.concurrent.locks.ReentrantLock();
++    // Pufferfish end - Entity Status Lock
+     private boolean preventStatusUpdates;
+     public boolean startPreventingStatusUpdates() {
++        // Pufferfish start - Entity Status Lock
++        this.statusLock.lock();
+         final boolean ret = this.preventStatusUpdates;
+-        this.preventStatusUpdates = true;
++        if (ret) {
++            this.statusLock.unlock();
++        } else {
++            this.preventStatusUpdates = true;
++        }
++
+         return ret;
++        // Pufferfish end - Entity Status Lock
+     }
+ 
+     public boolean isPreventingStatusUpdates() {
+@@ -238,85 +252,114 @@ public final class ChunkEntitySlices {
+ 
+     public void stopPreventingStatusUpdates(final boolean prev) {
+         this.preventStatusUpdates = prev;
++        this.statusLock.unlock(); // Pufferfish - Entity Status Lock
+     }
+ 
+     public void updateStatus(final FullChunkStatus status, final EntityLookup lookup) {
+-        this.status = status;
++        // Pufferfish start - Entity Status Lock
++        this.statusLock.lock();
++        try {
++            this.status = status;
+ 
+-        final Entity[] entities = this.entities.getRawData();
++            final Entity[] entities = this.entities.getRawData();
+ 
+-        for (int i = 0, size = this.entities.size(); i < size; ++i) {
+-            final Entity entity = entities[i];
++            for (int i = 0, size = this.entities.size(); i < size; ++i) {
++                final Entity entity = entities[i];
+ 
+-            final Visibility oldVisibility = EntityLookup.getEntityStatus(entity);
+-            ((ChunkSystemEntity)entity).moonrise$setChunkStatus(status);
+-            final Visibility newVisibility = EntityLookup.getEntityStatus(entity);
++                final Visibility oldVisibility = EntityLookup.getEntityStatus(entity);
++                ((ChunkSystemEntity) entity).moonrise$setChunkStatus(status);
++                final Visibility newVisibility = EntityLookup.getEntityStatus(entity);
+ 
+-            lookup.entityStatusChange(entity, this, oldVisibility, newVisibility, false, false, false);
++                lookup.entityStatusChange(entity, this, oldVisibility, newVisibility, false, false, false);
++            }
++        } finally {
++            this.statusLock.unlock();
+         }
++        // Pufferfish end - Entity Status Lock
+     }
+ 
+     public boolean addEntity(final Entity entity, final int chunkSection) {
+-        if (!this.entities.add(entity)) {
+-            return false;
+-        }
+-        ((ChunkSystemEntity)entity).moonrise$setChunkStatus(this.status);
+-        ((ChunkSystemEntity)entity).moonrise$setChunkData(this.chunkData);
+-        final int sectionIndex = chunkSection - this.minSection;
++        // Pufferfish start - Entity Status Lock
++        this.statusLock.lock();
++        this.collectionLock.lock();
++        try {
++            if (!this.entities.add(entity)) {
++                return false;
++            }
++            ((ChunkSystemEntity) entity).moonrise$setChunkStatus(this.status);
++            ((ChunkSystemEntity) entity).moonrise$setChunkData(this.chunkData);
++            final int sectionIndex = chunkSection - this.minSection;
+ 
+-        this.allEntities.addEntity(entity, sectionIndex);
++            this.allEntities.addEntity(entity, sectionIndex);
+ 
+-        if (((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
+-            this.hardCollidingEntities.addEntity(entity, sectionIndex);
+-        }
++            if (((ChunkSystemEntity) entity).moonrise$isHardColliding()) {
++                this.hardCollidingEntities.addEntity(entity, sectionIndex);
++            }
+ 
+-        for (final Iterator<Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection>> iterator =
+-             this.entitiesByClass.reference2ObjectEntrySet().fastIterator(); iterator.hasNext();) {
+-            final Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection> entry = iterator.next();
++            for (final Iterator<Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection>> iterator =
++                 this.entitiesByClass.reference2ObjectEntrySet().fastIterator(); iterator.hasNext(); ) {
++                final Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection> entry = iterator.next();
+ 
+-            if (entry.getKey().isInstance(entity)) {
+-                entry.getValue().addEntity(entity, sectionIndex);
++                if (entry.getKey().isInstance(entity)) {
++                    entry.getValue().addEntity(entity, sectionIndex);
++                }
+             }
+-        }
+ 
+-        EntityCollectionBySection byType = this.entitiesByType.get(entity.getType());
+-        if (byType != null) {
+-            byType.addEntity(entity, sectionIndex);
+-        } else {
+-            this.entitiesByType.put(entity.getType(), byType = new EntityCollectionBySection(this));
+-            byType.addEntity(entity, sectionIndex);
+-        }
++            final Reference2ObjectOpenHashMap<EntityType<?>, EntityCollectionBySection> byTypeMap = this.entitiesByType;
++            EntityCollectionBySection byType = byTypeMap.get(entity.getType());
++            if (byType != null) {
++                byType.addEntity(entity, sectionIndex);
++            } else {
++                final Reference2ObjectOpenHashMap<EntityType<?>, EntityCollectionBySection> copy = new Reference2ObjectOpenHashMap<>(byTypeMap);
++                copy.put(entity.getType(), byType = new EntityCollectionBySection(this));
++                byType.addEntity(entity, sectionIndex);
++                this.entitiesByType = copy;
++            }
+ 
+-        return true;
++            return true;
++        } finally {
++            this.collectionLock.unlock();
++            this.statusLock.unlock();
++        }
++        // Pufferfish end - Entity Status Lock
+     }
+ 
+     public boolean removeEntity(final Entity entity, final int chunkSection) {
+-        if (!this.entities.remove(entity)) {
+-            return false;
+-        }
+-        ((ChunkSystemEntity)entity).moonrise$setChunkStatus(null);
+-        ((ChunkSystemEntity)entity).moonrise$setChunkData(null);
+-        final int sectionIndex = chunkSection - this.minSection;
++        // Pufferfish start - Entity Status Lock
++        this.statusLock.lock();
++        this.collectionLock.lock();
++        try {
++            if (!this.entities.remove(entity)) {
++                return false;
++            }
++            ((ChunkSystemEntity) entity).moonrise$setChunkStatus(null);
++            ((ChunkSystemEntity) entity).moonrise$setChunkData(null);
++            final int sectionIndex = chunkSection - this.minSection;
+ 
+-        this.allEntities.removeEntity(entity, sectionIndex);
++            this.allEntities.removeEntity(entity, sectionIndex);
+ 
+-        if (((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
+-            this.hardCollidingEntities.removeEntity(entity, sectionIndex);
+-        }
++            if (((ChunkSystemEntity) entity).moonrise$isHardColliding()) {
++                this.hardCollidingEntities.removeEntity(entity, sectionIndex);
++            }
+ 
+-        for (final Iterator<Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection>> iterator =
+-             this.entitiesByClass.reference2ObjectEntrySet().fastIterator(); iterator.hasNext();) {
+-            final Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection> entry = iterator.next();
++            for (final Iterator<Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection>> iterator =
++                 this.entitiesByClass.reference2ObjectEntrySet().fastIterator(); iterator.hasNext(); ) {
++                final Reference2ObjectMap.Entry<Class<? extends Entity>, EntityCollectionBySection> entry = iterator.next();
+ 
+-            if (entry.getKey().isInstance(entity)) {
+-                entry.getValue().removeEntity(entity, sectionIndex);
++                if (entry.getKey().isInstance(entity)) {
++                    entry.getValue().removeEntity(entity, sectionIndex);
++                }
+             }
+-        }
+ 
+-        final EntityCollectionBySection byType = this.entitiesByType.get(entity.getType());
+-        byType.removeEntity(entity, sectionIndex);
++            final EntityCollectionBySection byType = this.entitiesByType.get(entity.getType());
++            byType.removeEntity(entity, sectionIndex);
+ 
+-        return true;
++            return true;
++        } finally {
++            this.collectionLock.unlock();
++            this.statusLock.unlock();
++        }
++        // Pufferfish end - Entity Status Lock
+     }
+ 
+     public void getHardCollidingEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate) {
+@@ -335,7 +378,7 @@ public final class ChunkEntitySlices {
+ 
+     public <T extends Entity> void getEntities(final EntityType<?> type, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
+-        final EntityCollectionBySection byType = this.entitiesByType.get(type);
++        final EntityCollectionBySection byType = this.entitiesByType.get(type); // Pufferfish - Entity Status Lock - volatile snapshot read
+ 
+         if (byType != null) {
+             byType.getEntities((Entity)null, box, (List)into, (Predicate) predicate);
+@@ -344,7 +387,7 @@ public final class ChunkEntitySlices {
+ 
+     public <T extends Entity> boolean getEntities(final EntityType<?> type, final AABB box, final List<? super T> into,
+                                                   final Predicate<? super T> predicate, final int maxCount) {
+-        final EntityCollectionBySection byType = this.entitiesByType.get(type);
++        final EntityCollectionBySection byType = this.entitiesByType.get(type); // Pufferfish - Entity Status Lock - volatile snapshot read
+ 
+         if (byType != null) {
+             return byType.getEntitiesLimited((Entity)null, box, (List)into, (Predicate)predicate, maxCount);
+@@ -376,26 +419,39 @@ public final class ChunkEntitySlices {
+         return ret;
+     }
+ 
++    // Pufferfish start - Entity Status Lock - copy-on-write lookup maps
++    private EntityCollectionBySection getOrCreateClassCollection(final Class<? extends Entity> clazz) {
++        this.collectionLock.lock();
++        try {
++            EntityCollectionBySection collection = this.entitiesByClass.get(clazz);
++            if (collection == null) {
++                final Reference2ObjectOpenHashMap<Class<? extends Entity>, EntityCollectionBySection> copy = new Reference2ObjectOpenHashMap<>(this.entitiesByClass);
++                copy.put(clazz, collection = this.initClass(clazz));
++                this.entitiesByClass = copy;
++            }
++            return collection;
++        } finally {
++            this.collectionLock.unlock();
++        }
++    }
++    // Pufferfish end - Entity Status Lock - copy-on-write lookup maps
++
+     public <T extends Entity> void getEntities(final Class<? extends T> clazz, final Entity except, final AABB box, final List<? super T> into,
+                                                final Predicate<? super T> predicate) {
+         EntityCollectionBySection collection = this.entitiesByClass.get(clazz);
+-        if (collection != null) {
+-            collection.getEntities(except, box, (List)into, (Predicate)predicate);
+-        } else {
+-            this.entitiesByClass.put(clazz, collection = this.initClass(clazz));
+-            collection.getEntities(except, box, (List)into, (Predicate)predicate);
+-        }
++        // Pufferfish start - Entity Status Lock - copy-on-write lookup maps
++        if (collection == null) collection = this.getOrCreateClassCollection(clazz);
++        collection.getEntities(except, box, (List)into, (Predicate)predicate);
++        // Pufferfish end - Entity Status Lock - copy-on-write lookup maps
+     }
+ 
+     public <T extends Entity> boolean getEntities(final Class<? extends T> clazz, final Entity except, final AABB box, final List<? super T> into,
+                                                   final Predicate<? super T> predicate, final int maxCount) {
+         EntityCollectionBySection collection = this.entitiesByClass.get(clazz);
+-        if (collection != null) {
+-            return collection.getEntitiesLimited(except, box, (List)into, (Predicate)predicate, maxCount);
+-        } else {
+-            this.entitiesByClass.put(clazz, collection = this.initClass(clazz));
+-            return collection.getEntitiesLimited(except, box, (List)into, (Predicate)predicate, maxCount);
+-        }
++        // Pufferfish start - Entity Status Lock - copy-on-write lookup maps
++        if (collection == null) collection = this.getOrCreateClassCollection(clazz);
++        return collection.getEntitiesLimited(except, box, (List)into, (Predicate)predicate, maxCount);
++        // Pufferfish end - Entity Status Lock - copy-on-write lookup maps
+     }
+ 
+     private static final class BasicEntityList<E extends Entity> {
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index e418820359c430b91bb91eb65d137b9cdbe2db4b..f78c939944b44547acb2d5d7c544b4adcbe2081b 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -1129,7 +1129,7 @@ public final class ChunkHolderManager {
+         if (changedFullStatus.isEmpty()) {
+             return;
+         }
+-        if (!TickThread.isTickThread()) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && !TickThread.isTickThreadFor(world) || !TickThread.isTickThread()) { // Pufferfish - Parallel world ticking
+             // These will be handled on the next ServerChunkCache$MainThreadExecutor#pollTask, as it runs the distance manager update
+             // which will invoke processTicketUpdates
+             this.offThreadPendingFullLoadUpdate.addAll(changedFullStatus);
+@@ -1150,7 +1150,13 @@ public final class ChunkHolderManager {
+ 
+     // note: never call while inside the chunk system, this will absolutely break everything
+     public void processUnloads() {
+-        TickThread.ensureTickThread("Cannot unload chunks off-main");
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            TickThread.ensureTickThread(world, "Cannot unload chunks off-main");
++        } else {
++            TickThread.ensureTickThread("Cannot unload chunks off-main");
++        }
++        // Pufferfish end - Parallel world ticking
+ 
+         if (BLOCK_TICKET_UPDATES.get() == Boolean.TRUE) {
+             throw new IllegalStateException("Cannot unload chunks recursively");
+@@ -1419,7 +1425,11 @@ public final class ChunkHolderManager {
+         if (BLOCK_TICKET_UPDATES.get() == Boolean.TRUE) {
+             throw new IllegalStateException("Cannot update ticket level while unloading chunks or updating entity manager");
+         }
+-        final boolean isTickThread = TickThread.isTickThread();
++        // Pufferfish start - Parallel world ticking
++        final boolean isTickThread = gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking
++            ? TickThread.isTickThreadFor(world)
++            : TickThread.isTickThread();
++        // Pufferfish end - Parallel world ticking
+ 
+         if (!PlatformHooks.get().allowAsyncTicketUpdates() && isTickThread) {
+             TickThread.ensureTickThread("Cannot asynchronously process ticket updates");
+diff --git a/io/papermc/paper/entity/activation/ActivationRange.java b/io/papermc/paper/entity/activation/ActivationRange.java
+index 3810f9a46f5414f13efc2a159d79e34e717e58cb..cf43aecdb644cae8c24aa512bf8303e980646e8e 100644
+--- a/io/papermc/paper/entity/activation/ActivationRange.java
++++ b/io/papermc/paper/entity/activation/ActivationRange.java
+@@ -122,7 +122,7 @@ public final class ActivationRange {
+      *
+      * @param world
+      */
+-    public static void activateEntities(final Level world) {
++    public synchronized static void activateEntities(final Level world) { // Pufferfish - Parallel world ticking
+         final int miscActivationRange = world.spigotConfig.miscActivationRange;
+         final int raiderActivationRange = world.spigotConfig.raiderActivationRange;
+         final int animalActivationRange = world.spigotConfig.animalActivationRange;
+diff --git a/io/papermc/paper/redstone/RedstoneWireTurbo.java b/io/papermc/paper/redstone/RedstoneWireTurbo.java
+index 8e03419df1469c6fecfaa82fcb319a58635b39f3..eed83882930739dff747372f0792ad7c1602b82e 100644
+--- a/io/papermc/paper/redstone/RedstoneWireTurbo.java
++++ b/io/papermc/paper/redstone/RedstoneWireTurbo.java
+@@ -827,14 +827,21 @@ public final class RedstoneWireTurbo {
+         j = getMaxCurrentStrength(upd, j);
+         int l = 0;
+ 
+-        wire.shouldSignal = false;
+-        // Unfortunately, World.isBlockIndirectlyGettingPowered is complicated,
+-        // and I'm not ready to try to replicate even more functionality from
+-        // elsewhere in Minecraft into this accelerator.  So sadly, we must
+-        // suffer the performance hit of this very expensive call.  If there
+-        // is consistency to what this call returns, we may be able to cache it.
+-        final int k = worldIn.getBestNeighborSignal(upd.self);
+-        wire.shouldSignal = true;
++        // Pufferfish start - Parallel world ticking
++        final int k;
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            k = wire.getBlockSignal(worldIn, upd.self);
++        } else {
++            wire.shouldSignal = false;
++            // Unfortunately, World.isBlockIndirectlyGettingPowered is complicated,
++            // and I'm not ready to try to replicate even more functionality from
++            // elsewhere in Minecraft into this accelerator.  So sadly, we must
++            // suffer the performance hit of this very expensive call.  If there
++            // is consistency to what this call returns, we may be able to cache it.
++            k = worldIn.getBestNeighborSignal(upd.self);
++            wire.shouldSignal = true;
++        }
++        // Pufferfish end - Parallel world ticking
+ 
+         // The variable 'k' holds the maximum redstone power value of any adjacent blocks.
+         // If 'k' has the highest level of all neighbors, then the power level of this
+diff --git a/net/minecraft/core/dispenser/DispenseItemBehavior.java b/net/minecraft/core/dispenser/DispenseItemBehavior.java
+index 162d7890f204315b0476467e757de5c9dd84aeca..f9554152fdeb0026d4177c1c61fb0b9ca64c81b9 100644
+--- a/net/minecraft/core/dispenser/DispenseItemBehavior.java
++++ b/net/minecraft/core/dispenser/DispenseItemBehavior.java
+@@ -307,8 +307,10 @@ public interface DispenseItemBehavior {
+                     capturedBlockStates = new java.util.ArrayList<>(level.capturedBlockStates.values());
+                     level.capturedBlockStates.clear();
+ 
+-                    treeType = net.minecraft.world.level.block.SaplingBlock.treeType;
+-                    net.minecraft.world.level.block.SaplingBlock.treeType = null;
++                    // Pufferfish start - Parallel world ticking
++                    treeType = net.minecraft.world.level.block.SaplingBlock.getTreeTypeTL();
++                    net.minecraft.world.level.block.SaplingBlock.setTreeTypeTL(null);
++                    // Pufferfish end - Parallel world ticking
+                 }
+                 // Paper end
+                 // CraftBukkit start
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index fc87288434b00615aa98462ccc404bc4a41075e6..f69f930872337d9db850248cc59205bbe159c7ec 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -336,6 +336,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     private final Set<String> pluginsBlockingSleep = new java.util.HashSet<>(); // Paper - API to allow/disallow tick sleeping
+     public static final long SERVER_INIT = System.nanoTime(); // Paper - Lag compensation
+     public gg.pufferfish.pufferfish.util.AsyncExecutor mobSpawnExecutor = new gg.pufferfish.pufferfish.util.AsyncExecutor("MobSpawning"); // Pufferfish - optimize mob spawning
++    public java.util.concurrent.Semaphore serverLevelTickingSemaphore = null; // Pufferfish - Parallel world ticking
+     // Paper start - improve tick loop
+     public final ca.spottedleaf.common.time.TickData tickTimes1s  = new ca.spottedleaf.common.time.TickData(java.util.concurrent.TimeUnit.SECONDS.toNanos(1L));
+     public final ca.spottedleaf.common.time.TickData tickTimes5s  = new ca.spottedleaf.common.time.TickData(java.util.concurrent.TimeUnit.SECONDS.toNanos(5L));
+@@ -441,24 +442,36 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     private long lastMidTickExecute;
+     private long lastMidTickExecuteFailure;
+ 
++    // Pufferfish start - Parallel world ticking
++    private boolean tickLevelMidTickTasks(ServerLevel world) {
++        long currTime = System.nanoTime();
++        if (currTime - world.moonrise$getLastMidTickFailure() <= TASK_EXECUTION_FAILURE_BACKOFF) {
++            return false;
++        }
++        if (!world.getChunkSource().pollTask()) {
++            // we need to back off if this fails
++            world.moonrise$setLastMidTickFailure(currTime);
++            return false;
++        }
++        return true;
++    }
++    // Pufferfish end - Parallel world ticking
++
+     private boolean tickMidTickTasks() {
+         // give all worlds a fair chance at by targeting them all.
+         // if we execute too many tasks, that's fine - we have logic to correctly handle overuse of allocated time.
+-        boolean executed = false;
+-        for (final ServerLevel world : this.getAllLevels()) {
+-            long currTime = System.nanoTime();
+-            if (currTime - ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)world).moonrise$getLastMidTickFailure() <= TASK_EXECUTION_FAILURE_BACKOFF) {
+-                continue;
+-            }
+-            if (!world.getChunkSource().pollTask()) {
+-                // we need to back off if this fails
+-                ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel)world).moonrise$setLastMidTickFailure(currTime);
+-            } else {
+-                executed = true;
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && Thread.currentThread() instanceof ca.spottedleaf.moonrise.common.util.TickThread.ServerLevelTickThread levelThread) {
++            return this.tickLevelMidTickTasks(levelThread.currentlyTickingServerLevel);
++        } else {
++            boolean executed = false;
++            for (final ServerLevel world : this.getAllLevels()) {
++                executed = executed || this.tickLevelMidTickTasks(world);
+             }
+-        }
+ 
+-        return executed;
++            return executed;
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     @Override
+@@ -1769,6 +1782,26 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+ 
+     public final io.papermc.paper.threadedregions.EntityScheduler.EntitySchedulerTickList entitySchedulerTickList = new io.papermc.paper.threadedregions.EntityScheduler.EntitySchedulerTickList(); // Paper - optimise Folia entity scheduler
+ 
++    // Pufferfish start - Parallel world ticking
++    private void tickLevel(ServerLevel serverLevel, BooleanSupplier haveTime) {
++        try {
++            // Pufferfish start - MSPT tracking for each world
++            long tickStart = Util.getNanos();
++            serverLevel.tick(haveTime);
++
++            long tickDuration = Util.getNanos() - tickStart;
++            serverLevel.tickTimes5s.add(this.tickCount, tickDuration);
++            serverLevel.tickTimes10s.add(this.tickCount, tickDuration);
++            serverLevel.tickTimes60s.add(this.tickCount, tickDuration);
++            // Pufferfish end - MSPT tracking for each world
++        } catch (Throwable levelTickingException) {
++            CrashReport crashReport = CrashReport.forThrowable(levelTickingException, "Exception ticking world");
++            serverLevel.fillReportDetails(crashReport);
++            throw new ReportedException(crashReport);
++        }
++    }
++    // Pufferfish end - Parallel world ticking
++
+     protected void tickChildren(final BooleanSupplier haveTime) {
+         ProfilerFiller profiler = Profiler.get();
+         this.getPlayerList().getPlayers().forEach(playerx -> playerx.connection.suspendFlushing());
+@@ -1819,26 +1852,53 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         this.updateEffectiveRespawnData();
+ 
+         this.isIteratingOverLevels = true; // Paper - Throw exception on world create while being ticked
+-        for (ServerLevel level : this.getAllLevels()) {
+-            level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
+-            level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
+-            level.updateLagCompensationTick(); // Paper - lag compensation
+-            net.minecraft.world.level.block.entity.HopperBlockEntity.skipHopperEvents = level.paperConfig().hopper.disableMoveEvent || org.bukkit.event.inventory.InventoryMoveItemEvent.getHandlerList().getRegisteredListeners().length == 0; // Paper - Perf: Optimize Hoppers
+-            profiler.push(() -> level + " " + level.dimension().identifier());
+-            profiler.push("tick");
++        // Pufferfish start - Parallel world ticking
++        java.util.ArrayDeque<java.util.concurrent.Future<ServerLevel>> tasks = new java.util.ArrayDeque<>();
++        try {
++            for (ServerLevel level : this.getAllLevels()) {
++                level.hasPhysicsEvent = org.bukkit.event.block.BlockPhysicsEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - BlockPhysicsEvent
++                level.hasEntityMoveEvent = io.papermc.paper.event.entity.EntityMoveEvent.getHandlerList().getRegisteredListeners().length > 0; // Paper - Add EntityMoveEvent
++                level.updateLagCompensationTick(); // Paper - lag compensation
++                net.minecraft.world.level.block.entity.HopperBlockEntity.skipHopperEvents = level.paperConfig().hopper.disableMoveEvent || org.bukkit.event.inventory.InventoryMoveItemEvent.getHandlerList().getRegisteredListeners().length == 0; // Paper - Perf: Optimize Hoppers
++                profiler.push(() -> level + " " + level.dimension().identifier());
++                profiler.push("tick");
++
++                if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                    serverLevelTickingSemaphore.acquire();
++                    tasks.add(
++                        level.tickExecutor.submit(() -> {
++                            ca.spottedleaf.moonrise.common.util.TickThread.ServerLevelTickThread currentThread = (ca.spottedleaf.moonrise.common.util.TickThread.ServerLevelTickThread) Thread.currentThread();
++                            currentThread.currentlyTickingServerLevel = level;
++
++                            try {
++                                tickLevel(level, haveTime);
++                            } finally {
++                                serverLevelTickingSemaphore.release();
++                            }
++                        }, level)
++                    );
++                } else {
++                    tickLevel(level, haveTime);
++                }
+ 
+-            try {
+-                level.tick(haveTime);
+-            } catch (Throwable t) {
+-                CrashReport report = CrashReport.forThrowable(t, "Exception ticking world");
+-                level.fillReportDetails(report);
+-                throw new ReportedException(report);
++                profiler.pop();
++                profiler.pop();
++                level.explosionDensityCache.clear(); // Paper - Optimize explosions
+             }
++        } catch (java.lang.InterruptedException | java.util.concurrent.RejectedExecutionException e) {
++            throw new RuntimeException(e);
++        }
+ 
+-            profiler.pop();
+-            profiler.pop();
+-            level.explosionDensityCache.clear(); // Paper - Optimize explosions
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            for (java.util.concurrent.Future<ServerLevel> task : tasks) {
++                try {
++                    task.get();
++                } catch (java.lang.InterruptedException | java.util.concurrent.ExecutionException e) {
++                    throw new RuntimeException(e);
++                }
++            }
+         }
++        // Pufferfish end - Parallel world ticking
+         this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
+ 
+         profiler.popPush("connection");
+@@ -1929,6 +1989,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+         Map<ResourceKey<Level>, ServerLevel> oldLevels = this.levels;
+         Map<ResourceKey<Level>, ServerLevel> newLevels = Maps.newLinkedHashMap(oldLevels);
+         newLevels.remove(level.dimension());
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) level.tickExecutor.shutdown(); // Pufferfish - Parallel world ticking
+         this.levels = Collections.unmodifiableMap(newLevels);
+     }
+     // CraftBukkit end
+diff --git a/net/minecraft/server/PlayerAdvancements.java b/net/minecraft/server/PlayerAdvancements.java
+index d447b444abd9b62ab241419301a96d19ae77a7eb..c43f90c5f07a3a7f1054610f5caae235345852ea 100644
+--- a/net/minecraft/server/PlayerAdvancements.java
++++ b/net/minecraft/server/PlayerAdvancements.java
+@@ -53,7 +53,7 @@ public class PlayerAdvancements {
+     private AdvancementTree tree;
+     private final Map<AdvancementHolder, AdvancementProgress> progress = new LinkedHashMap<>();
+     private final Set<AdvancementHolder> visible = new HashSet<>();
+-    private final Set<AdvancementHolder> progressChanged = new HashSet<>();
++    private final Set<AdvancementHolder> progressChanged = gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking ? java.util.concurrent.ConcurrentHashMap.newKeySet() : new HashSet<>(); // Pufferfish - Parallel world ticking
+     private final Set<AdvancementNode> rootsToUpdate = new HashSet<>();
+     private ServerPlayer player;
+     private @Nullable AdvancementHolder lastSelectedTab;
+@@ -255,6 +255,7 @@ public class PlayerAdvancements {
+     }
+ 
+     public void flushDirty(final ServerPlayer player, final boolean showAdvancements) {
++        final boolean isConcurrent = gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking; // Pufferfish - Parallel world ticking
+         if (this.isFirstPacket || !this.rootsToUpdate.isEmpty() || !this.progressChanged.isEmpty()) {
+             Map<Identifier, AdvancementProgress> progress = new HashMap<>();
+             Set<AdvancementHolder> added = new java.util.TreeSet<>(java.util.Comparator.comparing(adv -> adv.id().toString())); // Paper - Changed from HashSet to TreeSet ordered alphabetically.
+@@ -266,13 +267,22 @@ public class PlayerAdvancements {
+ 
+             this.rootsToUpdate.clear();
+ 
+-            for (AdvancementHolder holder : this.progressChanged) {
+-                if (this.visible.contains(holder)) {
+-                    progress.put(holder.id(), this.progress.get(holder));
++            // Pufferfish start - Parallel world ticking
++            if (!this.progressChanged.isEmpty()) {
++                Set<AdvancementHolder> toProcess = isConcurrent ? new HashSet<>(this.progressChanged) : this.progressChanged;
++
++                for (AdvancementHolder holder : toProcess) {
++                    if (this.visible.contains(holder)) {
++                        progress.put(holder.id(), this.progress.get(holder));
++                    }
++                }
++                if (isConcurrent) {
++                    this.progressChanged.removeAll(toProcess);
++                } else {
++                    this.progressChanged.clear();
+                 }
+             }
+-
+-            this.progressChanged.clear();
++            // Pufferfish end - Parallel world ticking
+             if (!progress.isEmpty() || !added.isEmpty() || !removed.isEmpty()) {
+                 player.connection.send(new ClientboundUpdateAdvancementsPacket(this.isFirstPacket, added, removed, progress, showAdvancements));
+             }
+diff --git a/net/minecraft/server/dedicated/DedicatedServer.java b/net/minecraft/server/dedicated/DedicatedServer.java
+index b4e4aa4b40d3a25f591b0a8fa5e253b0d6909862..b813bd7d5d31d14ffe7fc74d83b919306e1637dd 100644
+--- a/net/minecraft/server/dedicated/DedicatedServer.java
++++ b/net/minecraft/server/dedicated/DedicatedServer.java
+@@ -254,6 +254,13 @@ public class DedicatedServer extends MinecraftServer implements ServerInterface
+         gg.pufferfish.pufferfish.PufferfishConfig.load(); // Pufferfish
+         gg.pufferfish.pufferfish.PufferfishCommand.init(); // Pufferfish
+ 
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            serverLevelTickingSemaphore = new java.util.concurrent.Semaphore(gg.pufferfish.pufferfish.PufferfishConfig.parallelWorldTickingThreadCount);
++            DedicatedServer.LOGGER.info("Using {} permits for Parallel world ticking", serverLevelTickingSemaphore.availablePermits());
++        }
++        // Pufferfish end - Parallel world ticking
++
+         // this.worldData.setGameType(properties.gameMode.get()); // CraftBukkit - moved to world loading
+         LOGGER.info("Default game type: {}", properties.gameMode.get());
+         // Paper start - Unix domain socket support
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index 570b3d845a61b21c0a52186702c6708fd6b3babb..0a91490bc7a8083d7cece0e4e4de612cd30617c9 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -139,8 +139,10 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+     private final ChunkMap.DistanceManager distanceManager;
+     private final String storageName;
+     private final PlayerMap playerMap = new PlayerMap();
+-    public final Int2ObjectMap<ChunkMap.TrackedEntity> entityMap = new Int2ObjectOpenHashMap<>();
+-    private final Long2ByteMap chunkTypeCache = new Long2ByteOpenHashMap();
++    // Pufferfish start - Optimize collections
++    public final Int2ObjectMap<ChunkMap.TrackedEntity> entityMap = it.unimi.dsi.fastutil.ints.Int2ObjectMaps.synchronize(new Int2ObjectOpenHashMap<>());
++    private final Long2ByteMap chunkTypeCache = it.unimi.dsi.fastutil.longs.Long2ByteMaps.synchronize(new Long2ByteOpenHashMap());
++    // Pufferfish end - Optimize collections
+     // Paper - rewrite chunk system
+     public int serverViewDistance;
+     public final WorldGenContext worldGenContext; // Paper - public
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 4d5a5a6a773d9bf1f0838c58f29d67d5a773a084..865a782552462df7136a2580d1208043395cb492 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -175,8 +175,12 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+ 
+             // call mid-tick tasks for chunk system
+             if ((i & 7) == 0) {
+-                ((ca.spottedleaf.moonrise.patches.chunk_system.server.ChunkSystemMinecraftServer)this.level.getServer()).moonrise$executeMidTickTasks();
+-                continue;
++                // Pufferfish start - Parallel world ticking
++                if (!gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                    ((ca.spottedleaf.moonrise.patches.chunk_system.server.ChunkSystemMinecraftServer) this.level.getServer()).moonrise$executeMidTickTasks();
++                    continue;
++                }
++                // Pufferfish end - Parallel world ticking
+             }
+         }
+     }
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index ae2e71e04302f97cc8a7c5f8c9192d1dc1efb686..3d39aa5160555aa97c2d2e6acdaac473f761b7c8 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -196,7 +196,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     private final ServerChunkCache chunkSource;
+     private final MinecraftServer server;
+     public final io.papermc.paper.world.saveddata.PaperLevelOverrides serverLevelData; // Paper - type
+-    private final EntityTickList entityTickList = new EntityTickList();
++    private final EntityTickList entityTickList = new EntityTickList(this); // Pufferfish - Parallel world ticking
+ 
+     public net.minecraft.world.level.entity.EntityTickList pufferfish$getEntityTickList() { // Pufferfish - async mob spawning
+         return this.entityTickList;
+@@ -239,6 +239,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     private @Nullable ServerClockManager clockManager;
+     public boolean hasPhysicsEvent = true; // Paper - BlockPhysicsEvent
+     public boolean hasEntityMoveEvent; // Paper - Add EntityMoveEvent
++    public java.util.concurrent.ExecutorService tickExecutor; // Pufferfish - Parallel world ticking
++    // Pufferfish start - MSPT tracking for each world
++    public final MinecraftServer.TickTimes tickTimes5s = new MinecraftServer.TickTimes(100);
++    public final MinecraftServer.TickTimes tickTimes10s = new MinecraftServer.TickTimes(200);
++    public final MinecraftServer.TickTimes tickTimes60s = new MinecraftServer.TickTimes(1200);
++    // Pufferfish end - MSPT tracking for each world
+     private static final org.bukkit.craftbukkit.persistence.CraftPersistentDataTypeRegistry DATA_TYPE_REGISTRY = new org.bukkit.craftbukkit.persistence.CraftPersistentDataTypeRegistry();
+     public final org.bukkit.craftbukkit.persistence.CraftPersistentDataContainer persistentDataContainer = new org.bukkit.craftbukkit.persistence.CraftPersistentDataContainer(DATA_TYPE_REGISTRY);
+     private final alternate.current.wire.WireHandler wireHandler = new alternate.current.wire.WireHandler(this); // Paper - optimize redstone (Alternate Current)
+@@ -747,6 +753,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         this.chunkDataController = new ca.spottedleaf.moonrise.patches.chunk_system.io.datacontroller.ChunkDataController((ServerLevel)(Object)this, this.chunkTaskScheduler);
+         // Paper end - rewrite chunk system
+         this.getCraftServer().addWorld(this.getWorld()); // CraftBukkit
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            this.tickExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(new gg.pufferfish.pufferfish.async.world.ServerLevelTickThreadFactory(getWorld().getName()));
++        } else {
++            this.tickExecutor = null;
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     // Paper start
+@@ -814,6 +827,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+             profiler.pop();
+         }
+ 
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && (++this.tickedBlocksOrFluids & 7L) != 0L) {
++            this.moonrise$midTickTasks();
++        }
++        // Pufferfish end - Parallel world ticking
++
+         int percentage = this.getGameRules().get(GameRules.PLAYERS_SLEEPING_PERCENTAGE);
+         if (this.sleepStatus.areEnoughSleeping(percentage) && this.sleepStatus.areEnoughDeepSleeping(percentage, this.players)) {
+             Optional<Holder<WorldClock>> defaultClock = this.dimensionType().defaultClock();
+@@ -1359,12 +1378,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (fluidState.is(type)) {
+             fluidState.tick(this, pos, blockState);
+         }
+-        // Paper start - rewrite chunk system
+-        if ((++this.tickedBlocksOrFluids & 7L) != 0L) {
+-            ((ca.spottedleaf.moonrise.patches.chunk_system.server.ChunkSystemMinecraftServer)this.server).moonrise$executeMidTickTasks();
++        // Pufferfish start - Parallel world ticking
++        ++this.tickedBlocksOrFluids;
++        if (!gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && (this.tickedBlocksOrFluids & 7L) != 0L) {
++            this.server.moonrise$executeMidTickTasks();
+         }
+-        // Paper end - rewrite chunk system
+-
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     private void tickBlock(final BlockPos pos, final Block type) {
+@@ -1372,12 +1391,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (state.is(type)) {
+             state.tick(this, pos, this.random);
+         }
+-        // Paper start - rewrite chunk system
+-        if ((++this.tickedBlocksOrFluids & 7L) != 0L) {
+-            ((ca.spottedleaf.moonrise.patches.chunk_system.server.ChunkSystemMinecraftServer)this.server).moonrise$executeMidTickTasks();
++        // Pufferfish start - Parallel world ticking
++        ++this.tickedBlocksOrFluids;
++        if (!gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && (this.tickedBlocksOrFluids & 7L) != 0L) {
++            this.server.moonrise$executeMidTickTasks();
+         }
+-        // Paper end - rewrite chunk system
+-
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     // Paper start - log detailed entity tick information
+@@ -1625,6 +1644,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     private void addPlayer(final ServerPlayer player) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, "Cannot add player off-main"); // Pufferfish - Parallel world ticking
+         Entity existing = this.getEntity(player.getUUID());
+         if (existing != null) {
+             LOGGER.warn("Force-added player with duplicate UUID {}", player.getUUID());
+@@ -1637,7 +1657,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+ 
+     // CraftBukkit start
+     private boolean addEntity(final Entity entity, final org.bukkit.event.entity.CreatureSpawnEvent.@Nullable SpawnReason spawnReason) {
+-        org.spigotmc.AsyncCatcher.catchOp("entity add"); // Spigot
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this, "Cannot add entity off-main");
++        } else {
++            org.spigotmc.AsyncCatcher.catchOp("entity add"); // Spigot
++        }
++        // Pufferfish end - Parallel world ticking
+         entity.generation = false; // Paper - Don't fire sync event during generation; Reset flag if it was added during a ServerLevel generation process
+         // Paper start - extra debug info
+         if (entity.valid) {
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 3cd4e850f223100b61ac6831a87dd38f3a3bb58f..b41bdb43ba7dac8fbe81149959c0ba34d502fbde 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -441,6 +441,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public boolean isRealPlayer; // Paper
+     public com.destroystokyo.paper.event.entity.@Nullable PlayerNaturallySpawnCreaturesEvent playerNaturallySpawnedEvent; // Paper - PlayerNaturallySpawnCreaturesEvent
+     public org.bukkit.event.player.PlayerQuitEvent.@Nullable QuitReason quitReason = null; // Paper - Add API for quit reason; there are a lot of changes to do if we change all methods leading to the event
++    public boolean hasTickedAtLeastOnceInNewWorld = false; // Pufferfish - Parallel world ticking
+ 
+     // Paper start - rewrite chunk system
+     private ca.spottedleaf.moonrise.patches.chunk_system.player.RegionizedPlayerChunkLoader.PlayerChunkLoaderData chunkLoader;
+@@ -717,6 +718,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+ 
+     @Override
+     public void tick() {
++        hasTickedAtLeastOnceInNewWorld = true; // Pufferfish - Parallel world ticking
+         // CraftBukkit start
+         if (this.joining) {
+             this.joining = false;
+@@ -1520,6 +1522,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+             return this;
+         }
+ 
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureOnlyTickThread("Cannot change dimension of a player off-main, from world " + oldLevel.getWorld().getName() + " to world " + newLevel.getWorld().getName()); // Pufferfish - Parallel world ticking (additional concurrency issues logs)
+         this.isChangingDimension = true;
+         LevelData levelData = newLevel.getLevelData();
+         this.connection.send(new ClientboundRespawnPacket(this.createCommonSpawnInfo(newLevel), ClientboundRespawnPacket.KEEP_ALL_DATA));
+@@ -1841,6 +1844,12 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+ 
+             return OptionalInt.empty();
+         } else {
++            // Pufferfish start - Parallel world ticking
++            if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && !hasTickedAtLeastOnceInNewWorld) {
++                MinecraftServer.LOGGER.warn("Ignoring request to open container {} because we haven't ticked in the current world yet!", menu, new Throwable());
++                return OptionalInt.empty();
++            }
++            // Pufferfish end - Parallel world ticking
+             // CraftBukkit start
+             this.containerMenu = menu; // Moved up
+             if (!this.isImmobile()) {
+@@ -1936,6 +1945,11 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     }
+     @Override
+     public void closeContainer(org.bukkit.event.inventory.InventoryCloseEvent.Reason reason) {
++        // Pufferfish start - Parallel world ticking (debugging)
++        if (gg.pufferfish.pufferfish.PufferfishConfig.logContainerCreationStacktraces) {
++            MinecraftServer.LOGGER.warn("Closing {} inventory that was created at", this.getBukkitEntity().getName(), this.containerMenu.containerCreationStacktrace);
++        }
++        // Pufferfish end - Parallel world ticking (debugging)
+         org.bukkit.craftbukkit.event.CraftEventFactory.handleInventoryCloseEvent(this, reason); // CraftBukkit
+         // Paper end - Inventory close reason
+         this.connection.send(new ClientboundContainerClosePacket(this.containerMenu.containerId));
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index baec5d072b8f2d9379dba850b04e881e5267ca6b..64f7ed6f73728479a600cd96795b8d529585a137 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -156,6 +156,7 @@ public abstract class PlayerList {
+     abstract public void loadAndSaveFiles(); // Paper - fix converting txt to json file; moved from DedicatedPlayerList constructor
+ 
+     public void placeNewPlayer(final Connection connection, final ServerPlayer player, final CommonListenerCookie cookie) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureOnlyTickThread("Cannot place new player off-main"); // Pufferfish - Parallel world ticking
+         player.isRealPlayer = true; // Paper
+         player.loginTime = System.currentTimeMillis(); // Paper - Replace OfflinePlayer#getLastPlayed
+         NameAndId gameProfile = player.nameAndId();
+@@ -594,6 +595,7 @@ public abstract class PlayerList {
+ 
+     // Paper start - respawn event
+     public ServerPlayer respawn(final ServerPlayer serverPlayer, final boolean keepAllPlayerData, final Entity.RemovalReason removalReason, final org.bukkit.event.player.PlayerRespawnEvent.RespawnReason respawnReason) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureOnlyTickThread("Cannot respawn player off-main, respawning in world " + serverPlayer.level().getWorld().getName()); // Pufferfish - Parallel world ticking
+         ServerPlayer.RespawnResult result = serverPlayer.findRespawnPositionAndUseSpawnBlock0(!keepAllPlayerData, TeleportTransition.DO_NOTHING, respawnReason);
+         if (result == null) { // disconnected player during the respawn event
+             return serverPlayer;
+@@ -606,6 +608,7 @@ public abstract class PlayerList {
+         serverPlayer.level().removePlayerImmediately(serverPlayer, removalReason);
+         ServerLevel level = respawnInfo.newLevel();
+         ServerPlayer player = serverPlayer; // Paper - TODO - recreate instance
++        player.hasTickedAtLeastOnceInNewWorld = false; // Pufferfish - Parallel world ticking
+         player.connection = serverPlayer.connection;
+         player.restoreFrom(serverPlayer, keepAllPlayerData);
+         player.setId(serverPlayer.getId());
+diff --git a/net/minecraft/server/waypoints/ServerWaypointManager.java b/net/minecraft/server/waypoints/ServerWaypointManager.java
+index b9748a392c9f76e61a1b673085b4dd74c007c70d..f5aeb9c4191d856c972cf4c658ca8ef291a4b9ba 100644
+--- a/net/minecraft/server/waypoints/ServerWaypointManager.java
++++ b/net/minecraft/server/waypoints/ServerWaypointManager.java
+@@ -19,16 +19,19 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     private final Set<WaypointTransmitter> waypoints = new HashSet<>();
+     private final Set<ServerPlayer> players = new HashSet<>();
+     private final Table<ServerPlayer, WaypointTransmitter, WaypointTransmitter.Connection> connections = HashBasedTable.create();
++    private final net.minecraft.server.level.ServerLevel level; // Pufferfish - Parallel world ticking
+     // Paper start - optimize ServerWaypointManager with locator bar disabled
+     public boolean locatorBarEnabled; // Avoid a gamerule lookup for each player
+ 
+     public ServerWaypointManager(net.minecraft.server.level.ServerLevel serverLevel) {
++        this.level = serverLevel; // Pufferfish - Parallel world ticking
+         this.locatorBarEnabled = serverLevel.getGameRules().get(GameRules.LOCATOR_BAR);
+     }
+     // Paper end - optimize ServerWaypointManager with locator bar disabled
+ 
+     @Override
+     public void trackWaypoint(final WaypointTransmitter waypoint) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot track waypoints off-main"); // Pufferfish - Parallel world ticking
+         this.waypoints.add(waypoint);
+ 
+         if (!this.locatorBarEnabled) return; // Paper - optimize ServerWaypointManager with locator bar disabled
+@@ -39,6 +42,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+ 
+     @Override
+     public void updateWaypoint(final WaypointTransmitter waypoint) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot update waypoints off-main"); // Pufferfish - Parallel world ticking
+         if (!this.locatorBarEnabled) return; // Paper - optimize ServerWaypointManager with locator bar disabled
+         if (this.waypoints.contains(waypoint)) {
+             Map<ServerPlayer, WaypointTransmitter.Connection> playerConnection = Tables.transpose(this.connections).row(waypoint);
+@@ -56,12 +60,14 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+ 
+     @Override
+     public void untrackWaypoint(final WaypointTransmitter waypoint) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot untrack waypoints off-main"); // Pufferfish - Parallel world ticking
+         this.connections.column(waypoint).forEach((player, connection) -> connection.disconnect());
+         Tables.transpose(this.connections).row(waypoint).clear();
+         this.waypoints.remove(waypoint);
+     }
+ 
+     public void addPlayer(final ServerPlayer player) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot add player to waypoints off-main"); // Pufferfish - Parallel world ticking
+         this.players.add(player);
+ 
+         if (this.locatorBarEnabled) { // Paper - optimize ServerWaypointManager with locator bar disabled
+@@ -76,6 +82,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     }
+ 
+     public void updatePlayer(final ServerPlayer player) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot update player for waypoints off-main"); // Pufferfish - Parallel world ticking
+         if (!this.locatorBarEnabled) return; // Paper - optimize ServerWaypointManager with locator bar disabled
+         Map<WaypointTransmitter, WaypointTransmitter.Connection> waypointConnections = this.connections.row(player);
+         SetView<WaypointTransmitter> potentialWaypoints = Sets.difference(this.waypoints, waypointConnections.keySet());
+@@ -90,6 +97,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     }
+ 
+     public void removePlayer(final ServerPlayer player) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot remove player from waypoints off-main"); // Pufferfish - Parallel world ticking
+         this.connections.row(player).values().removeIf(connection -> {
+             connection.disconnect();
+             return true;
+@@ -99,6 +107,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     }
+ 
+     public void breakAllConnections() {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking)  ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot break all waypoint connections off-main"); // Pufferfish - Parallel world ticking
+         this.connections.values().forEach(WaypointTransmitter.Connection::disconnect);
+         this.connections.clear();
+     }
+@@ -122,6 +131,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     }
+ 
+     private void createConnection(final ServerPlayer player, final WaypointTransmitter waypoint) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot create waypoint connections off-main"); // Pufferfish - Parallel world ticking
+         if (player != waypoint) {
+             if (isLocatorBarEnabledFor(player)) {
+                 waypoint.makeWaypointConnectionWith(player).ifPresentOrElse(connection -> {
+@@ -138,6 +148,7 @@ public class ServerWaypointManager implements WaypointManager<WaypointTransmitte
+     }
+ 
+     private void updateConnection(final ServerPlayer player, final WaypointTransmitter waypoint, final WaypointTransmitter.Connection connection) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, "Cannot update waypoint connection off-main"); // Pufferfish - Parallel world ticking
+         if (player != waypoint) {
+             if (isLocatorBarEnabledFor(player)) {
+                 if (!connection.isBroken()) {
+diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
+index 9ed3a90f9604f4a18cb74eaf1eb2d26ad56c11ed..bbcea13465783261e103067805a4e00e2ce23c04 100644
+--- a/net/minecraft/world/entity/Entity.java
++++ b/net/minecraft/world/entity/Entity.java
+@@ -3589,13 +3589,32 @@ public abstract class Entity
+                     ProfilerFiller profiler = Profiler.get();
+                     profiler.push("portal");
+                     this.setPortalCooldown();
+-                    TeleportTransition teleportTransition = this.portalProcess.getPortalDestination(level, this);
+-                    if (teleportTransition != null) {
+-                        ServerLevel newLevel = teleportTransition.newLevel();
+-                        if (level.isAllowedToEnterPortal(newLevel) && (newLevel.dimension() == level.dimension() || this.canTeleport(level, newLevel))) {
+-                            this.teleport(teleportTransition);
++                    // Pufferfish start - Parallel world ticking
++                    java.util.function.Consumer<Entity> portalEntityTask = entity -> {
++                        assert entity.portalProcess != null;
++                        if (entity.portalProcess == null) return; // Fixes NPE
++
++                        if (entity.portalProcess.isParallelCancelledByPlugin()) {
++                            entity.portalProcess = null;
++                            return;
+                         }
++
++                        TeleportTransition teleportTransition = this.portalProcess.getPortalDestination(level, this);
++                        if (teleportTransition != null) {
++                            ServerLevel newLevel = teleportTransition.newLevel();
++                            if (level.isAllowedToEnterPortal(newLevel) && (newLevel.dimension() == level.dimension() || this.canTeleport(level, newLevel))) {
++                                this.teleport(teleportTransition);
++                            }
++                        }
++                    };
++
++                    if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                        this.portalProcess.setParallelAsScheduled();
++                        this.getBukkitEntity().taskScheduler.schedule(portalEntityTask, entity -> {}, 0);
++                    } else {
++                        portalEntityTask.accept(this);
+                     }
++                    // Pufferfish end - Parallel world ticking
+ 
+                     profiler.pop();
+                 } else if (this.portalProcess.hasExpired()) {
+@@ -4180,6 +4199,7 @@ public abstract class Entity
+     }
+ 
+     private @Nullable Entity teleportCrossDimension(final ServerLevel oldLevel, final ServerLevel newLevel, final TeleportTransition transition) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(newLevel, "Cannot teleport entity to another world off-main, from world " + oldLevel.getWorld().getName() + " to world " + newLevel.getWorld().getName()); // Pufferfish - Parallel world ticking
+         List<Entity> oldPassengers = this.getPassengers();
+         List<Entity> newPassengers = new ArrayList<>(oldPassengers.size());
+         this.ejectPassengers();
+diff --git a/net/minecraft/world/entity/EntitySelector.java b/net/minecraft/world/entity/EntitySelector.java
+index a3c13e421768f5e1a703b5b1167fa1c912b6f126..6cf896b035cd51c6aa5ac89575eee9ccf09b92b8 100644
+--- a/net/minecraft/world/entity/EntitySelector.java
++++ b/net/minecraft/world/entity/EntitySelector.java
+@@ -30,7 +30,7 @@ public final class EntitySelector {
+     // Paper end - Ability to control player's insomnia and phantoms
+     // Paper start - Affects Spawning API
+     public static final Predicate<Entity> PLAYER_AFFECTS_SPAWNING = (entity) -> {
+-        return !entity.isSpectator() && entity.isAlive() && entity instanceof Player player && player.affectsSpawning;
++        return entity instanceof Player player && !player.isSpectator() && player.isAlive() && player.affectsSpawning; // Pufferfish - Parallel world ticking - fix NPE
+     };
+     // Paper end - Affects Spawning API
+ 
+diff --git a/net/minecraft/world/entity/PortalProcessor.java b/net/minecraft/world/entity/PortalProcessor.java
+index 7ec15f3d3a770e1e9e2fbac29dd38e947bb07091..e1c9015e5b6586c18d151b06d435629d616800f1 100644
+--- a/net/minecraft/world/entity/PortalProcessor.java
++++ b/net/minecraft/world/entity/PortalProcessor.java
+@@ -11,6 +11,7 @@ public class PortalProcessor {
+     private BlockPos entryPosition;
+     private int portalTime;
+     private boolean insidePortalThisTick;
++    private gg.pufferfish.pufferfish.async.world.TeleportState teleportState = gg.pufferfish.pufferfish.async.world.TeleportState.INACTIVE; // Pufferfish - Parallel world ticking
+ 
+     public PortalProcessor(final Portal portal, final BlockPos portalEntryPosition) {
+         this.portal = portal;
+@@ -19,6 +20,7 @@ public class PortalProcessor {
+     }
+ 
+     public boolean processPortalTeleportation(final ServerLevel serverLevel, final Entity entity, final boolean allowedToTeleport) {
++        if (this.isParallelTeleportScheduled()) return false; // Pufferfish - Parallel world ticking
+         if (!this.insidePortalThisTick) {
+             this.decayTick();
+             return false;
+@@ -41,7 +43,7 @@ public class PortalProcessor {
+     }
+ 
+     public boolean hasExpired() {
+-        return this.portalTime <= 0;
++        return !this.isParallelTeleportScheduled() && this.portalTime <= 0; // Pufferfish - Parallel world ticking
+     }
+ 
+     public BlockPos getEntryPosition() {
+@@ -67,4 +69,30 @@ public class PortalProcessor {
+     public boolean isSamePortal(final Portal portal) {
+         return this.portal == portal;
+     }
++
++    // Pufferfish start - Parallel world ticking
++    public boolean isParallelTeleportPending() {
++        return this.teleportState == gg.pufferfish.pufferfish.async.world.TeleportState.PENDING;
++    }
++
++    public boolean isParallelTeleportScheduled() {
++        return this.teleportState != gg.pufferfish.pufferfish.async.world.TeleportState.INACTIVE;
++    }
++
++    public boolean isParallelCancelledByPlugin() {
++        return this.teleportState == gg.pufferfish.pufferfish.async.world.TeleportState.CANCELLED;
++    }
++
++    public void setParallelAsScheduled() {
++        this.teleportState = gg.pufferfish.pufferfish.async.world.TeleportState.PENDING;
++    }
++
++    public void confirmParallelAsHandled() {
++        this.teleportState = gg.pufferfish.pufferfish.async.world.TeleportState.INACTIVE;
++    }
++
++    public void setParallelAsCancelled() {
++        this.teleportState = gg.pufferfish.pufferfish.async.world.TeleportState.CANCELLED;
++    }
++    // Pufferfish end - Parallel world ticking
+ }
+diff --git a/net/minecraft/world/entity/ai/behavior/GoToPotentialJobSite.java b/net/minecraft/world/entity/ai/behavior/GoToPotentialJobSite.java
+index ba61762e09ace201173999b3984046f930ccfe57..d388de84a6b07d0842e3c90c7c9b2ace59e62347 100644
+--- a/net/minecraft/world/entity/ai/behavior/GoToPotentialJobSite.java
++++ b/net/minecraft/world/entity/ai/behavior/GoToPotentialJobSite.java
+@@ -43,15 +43,31 @@ public class GoToPotentialJobSite extends Behavior<Villager> {
+         Optional<GlobalPos> potentialJobSitePos = body.getBrain().getMemory(MemoryModuleType.POTENTIAL_JOB_SITE);
+         potentialJobSitePos.ifPresent(globalPos -> {
+             BlockPos pos = globalPos.pos();
+-            ServerLevel serverLevel = level.getServer().getLevel(globalPos.dimension());
+-            if (serverLevel != null) {
+-                PoiManager manager = serverLevel.getPoiManager();
+-                if (manager.exists(pos, p -> true)) {
+-                    manager.release(pos);
+-                }
++            // Pufferfish start - Parallel world ticking
++            ServerLevel serverLevel = level;
++            ServerLevel poiLevel = serverLevel.getServer().getLevel(globalPos.dimension());
++
++            if (poiLevel != null) {
++                Runnable poiOperationsTask = () -> {
++                    PoiManager manager = poiLevel.getPoiManager();
++                    if (manager.exists(pos, p -> true)) {
++                        manager.release(pos);
++                    }
++                };
+ 
+-                level.debugSynchronizers().updatePoi(pos);
++                Runnable debugPacketTask = () -> {
++                    level.debugSynchronizers().updatePoi(pos);
++                };
++
++                if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                    poiLevel.moonrise$getChunkTaskScheduler().scheduleChunkTask(pos.getX() >> 4, pos.getZ() >> 4, poiOperationsTask, ca.spottedleaf.concurrentutil.util.Priority.BLOCKING);
++                    serverLevel.moonrise$getChunkTaskScheduler().scheduleChunkTask(body.chunkPosition().x(), body.chunkPosition().z(), debugPacketTask, ca.spottedleaf.concurrentutil.util.Priority.BLOCKING);
++                } else {
++                    poiOperationsTask.run();
++                    debugPacketTask.run();
++                }
+             }
++            // Pufferfish end - Parallel world ticking
+         });
+         body.getBrain().eraseMemory(MemoryModuleType.POTENTIAL_JOB_SITE);
+     }
+diff --git a/net/minecraft/world/entity/npc/villager/Villager.java b/net/minecraft/world/entity/npc/villager/Villager.java
+index b3e870c16917741d2cb1ff2f56d7da248600d5eb..ee302c9c8e32ecfe17bce4f63f1ea7986dc5bd04 100644
+--- a/net/minecraft/world/entity/npc/villager/Villager.java
++++ b/net/minecraft/world/entity/npc/villager/Villager.java
+@@ -681,13 +681,24 @@ public class Villager extends AbstractVillager implements VillagerDataHolder, Re
+             this.brain.getMemory(memoryType).ifPresent(memory -> {
+                 ServerLevel poiLevel = server.getLevel(memory.dimension());
+                 if (poiLevel != null) {
+-                    PoiManager poiManager = poiLevel.getPoiManager();
+-                    Optional<Holder<PoiType>> type = poiManager.getType(memory.pos());
+-                    BiPredicate<Villager, Holder<PoiType>> poiTypePredicate = POI_MEMORIES.get(memoryType);
+-                    if (type.isPresent() && poiTypePredicate.test(this, type.get())) {
+-                        poiManager.release(memory.pos());
+-                        poiLevel.debugSynchronizers().updatePoi(memory.pos());
++                    // Pufferfish start - Parallel world ticking
++                    Runnable releasePoiTask = () -> {
++                        PoiManager poiManager = poiLevel.getPoiManager();
++                        Optional<Holder<PoiType>> type = poiManager.getType(memory.pos());
++                        BiPredicate<Villager, Holder<PoiType>> poiTypePredicate = POI_MEMORIES.get(memoryType);
++                        if (type.isPresent() && poiTypePredicate.test(this, type.get())) {
++                            poiManager.release(memory.pos());
++                            poiLevel.debugSynchronizers().updatePoi(memory.pos());
++                        }
++                    };
++
++                    if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                        poiLevel.moonrise$getChunkTaskScheduler().scheduleChunkTask(0, 0, releasePoiTask, ca.spottedleaf.concurrentutil.util.Priority.BLOCKING);
++                    }
++                    else {
++                        releasePoiTask.run();
+                     }
++                    // Pufferfish end - Parallel world ticking
+                 }
+             });
+         }
+diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+index 8d3c6abd387acc4cec27a33b96bcd24255fd01ac..723ae5bb2ed067920ed69b01c28fd940e1caa0e6 100644
+--- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
++++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+@@ -104,43 +104,53 @@ public class ThrownEnderpearl extends ThrowableItemProjectile {
+                 Vec3 teleportPos = this.oldPosition();
+                 if (owner instanceof ServerPlayer player) {
+                     if (player.connection.isAcceptingMessages()) {
+-                        // CraftBukkit start
+-                        // Store pre teleportation position as the teleport has been moved up.
+-                        final double preTeleportX = player.getX(), preTeleportY = player.getY(), preTeleportZ = player.getZ();
+-                        final float preTeleportYRot = player.getYRot(), preTeleportXRot = player.getXRot();
+-                        ServerPlayer newOwner = player.teleport(new TeleportTransition(
+-                            level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
+-                        if (newOwner == null) {
+-                            this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.HIT);
+-                            return;
+-                        }
+-                        // CraftBukkit end
+-                        if (this.random.nextFloat() < 0.05F && level.isSpawningMonsters() && level.getLevelData().getDifficulty() != Difficulty.PEACEFUL) {
+-                            Endermite endermite = EntityTypes.ENDERMITE.create(level, EntitySpawnReason.TRIGGERED);
+-                            if (endermite != null) {
+-                                endermite.snapTo(preTeleportX, preTeleportY, preTeleportZ, preTeleportYRot, preTeleportXRot); // Paper - spawn endermite at pre teleport position as teleport has been moved up
+-                                level.addFreshEntity(endermite, org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.ENDER_PEARL); // Paper - add reason
++                        // Pufferfish start - Parallel world ticking
++                        java.util.function.Consumer<ServerPlayer> teleportPlayerCrossDimensionTask = taskServerPlayer -> {
++                            // CraftBukkit start
++                            // Store pre teleportation position as the teleport has been moved up.
++                            final double preTeleportX = player.getX(), preTeleportY = player.getY(), preTeleportZ = player.getZ();
++                            final float preTeleportYRot = player.getYRot(), preTeleportXRot = player.getXRot();
++                            ServerPlayer newOwner = player.teleport(new TeleportTransition(
++                                level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
++                            if (newOwner == null) {
++                                this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.HIT);
++                                return;
++                            }
++                            // CraftBukkit end
++                            if (this.random.nextFloat() < 0.05F && level.isSpawningMonsters() && level.getLevelData().getDifficulty() != Difficulty.PEACEFUL) {
++                                Endermite endermite = EntityTypes.ENDERMITE.create(level, EntitySpawnReason.TRIGGERED);
++                                if (endermite != null) {
++                                    endermite.snapTo(preTeleportX, preTeleportY, preTeleportZ, preTeleportYRot, preTeleportXRot); // Paper - spawn endermite at pre teleport position as teleport has been moved up
++                                    level.addFreshEntity(endermite, org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.ENDER_PEARL); // Paper - add reason
++                                }
+                             }
+-                        }
+ 
+-                        if (this.isOnPortalCooldown()) {
+-                            owner.setPortalCooldown();
+-                        }
++                            if (this.isOnPortalCooldown()) {
++                                owner.setPortalCooldown();
++                            }
+ 
+-                        // CraftBukkit start - moved up
+-                        // ServerPlayer newOwner = player.teleport(
+-                        //     new TeleportTransition(
+-                        //         level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING
+-                        //     )
+-                        // );
+-                        // CraftBukkit end - moved up
+-                        if (newOwner != null) {
+-                            newOwner.resetFallDistance();
+-                            newOwner.resetCurrentImpulseContext();
+-                            newOwner.hurtServer(player.level(), this.damageSources().enderPearl().eventEntityDamager(this), 5.0F); // CraftBukkit // Paper - fix DamageSource API
+-                        }
++                            // CraftBukkit start - moved up
++                            // ServerPlayer newOwner = player.teleport(
++                            //     new TeleportTransition(
++                            //         level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING
++                            //     )
++                            // );
++                            // CraftBukkit end - moved up
++                            if (newOwner != null) {
++                                newOwner.resetFallDistance();
++                                newOwner.resetCurrentImpulseContext();
++                                newOwner.hurtServer(player.level(), this.damageSources().enderPearl().eventEntityDamager(this), 5.0F); // CraftBukkit // Paper - fix DamageSource API
++                            }
+ 
+-                        this.playSound(level, teleportPos);
++                            this.playSound(level, teleportPos);
++                        };
++
++                        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                            player.getBukkitEntity().taskScheduler.schedule(teleportPlayerCrossDimensionTask, entity -> {}, 0);
++                        } else {
++                            teleportPlayerCrossDimensionTask.accept(player);
++                        }
++                        // Pufferfish end - Parallel world ticking
+                     }
+                 } else {
+                     Entity newOwner = owner.teleport(
+diff --git a/net/minecraft/world/inventory/AbstractContainerMenu.java b/net/minecraft/world/inventory/AbstractContainerMenu.java
+index b37618125e85c1c6f284c7287202aae814c1ecfe..34e7d39743927c0d47e56292f3d19f6b89a1b67e 100644
+--- a/net/minecraft/world/inventory/AbstractContainerMenu.java
++++ b/net/minecraft/world/inventory/AbstractContainerMenu.java
+@@ -93,8 +93,14 @@ public abstract class AbstractContainerMenu {
+ 
+     public void startOpen() {}
+     // CraftBukkit end
++    public Throwable containerCreationStacktrace; // Pufferfish - Parallel world ticking
+ 
+     protected AbstractContainerMenu(final @Nullable MenuType<?> menuType, final int containerId) {
++        // Pufferfish start - Parallel world ticking (debugging)
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && gg.pufferfish.pufferfish.PufferfishConfig.logContainerCreationStacktraces) {
++            this.containerCreationStacktrace = new Throwable();
++        }
++        // Pufferfish start - Parallel world ticking (debugging)
+         this.menuType = menuType;
+         this.containerId = containerId;
+     }
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 44a7590558fa73fb570f76ba7a4e7db1415d08f7..71f3e047d4f807b79a900737fcef9c1db3b5f8fb 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -403,8 +403,10 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+             capturedBlockEntities = new java.util.ArrayList<>(level.capturedBlockEntities.values());
+             level.capturedBlockEntities.clear();
+ 
+-            treeType = net.minecraft.world.level.block.SaplingBlock.treeType;
+-            net.minecraft.world.level.block.SaplingBlock.treeType = null;
++            // Pufferfish start - Parallel world ticking
++            treeType = net.minecraft.world.level.block.SaplingBlock.getTreeTypeTL();
++            net.minecraft.world.level.block.SaplingBlock.setTreeTypeTL(null);
++            // Pufferfish end - Parallel world ticking
+         }
+ 
+         DataComponentPatch newPatch = this.components.asPatch();
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 9286d9bcf3ec4069e77d3133f3d7bf29b2370c5a..cd0f30def1f34b3c62f6edec2d1621d414e7ddd3 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -175,6 +175,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public static @Nullable BlockPos lastPhysicsProblem; // Spigot
+     public final Map<ServerExplosion.CacheKey, Float> explosionDensityCache = new java.util.HashMap<>(); // Paper - Optimize explosions
+     public java.util.ArrayDeque<net.minecraft.world.level.block.RedstoneTorchBlock.Toggle> redstoneUpdateInfos; // Paper - Faster redstone torch rapid clock removal; Move from Map in BlockRedstoneTorch to here
++    public io.papermc.paper.redstone.RedstoneWireTurbo turbo; // Pufferfish - Parallel world ticking (moved to world)
+ 
+     public CraftWorld getWorld() {
+         return this.world;
+@@ -875,6 +876,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         this.damageSources = new DamageSources(registryAccess);
+         this.entityLookup = new ca.spottedleaf.moonrise.patches.chunk_system.level.entity.dfl.DefaultEntityLookup(this); // Paper - rewrite chunk system
+         this.chunkPacketBlockController = this.paperConfig().anticheat.antiXray.enabled ? new io.papermc.paper.antixray.ChunkPacketBlockControllerAntiXray(this, executor) : io.papermc.paper.antixray.ChunkPacketBlockController.NO_OPERATION_INSTANCE; // Paper - Anti-Xray
++        this.turbo = gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking ? new io.papermc.paper.redstone.RedstoneWireTurbo((net.minecraft.world.level.block.RedStoneWireBlock) net.minecraft.world.level.block.Blocks.REDSTONE_WIRE) : null; // Pufferfish - Parallel world ticking
+     }
+ 
+     public int getNextEntityId() {
+@@ -1054,6 +1056,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public boolean setBlock(final BlockPos pos, final BlockState blockState, final @Block.UpdateFlags int updateFlags, final int updateLimit) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, pos, "Updating block asynchronously"); // Pufferfish - Parallel world ticking (additional concurrency issues logs)
+         // CraftBukkit start - tree generation
+         if (this.captureTreeGeneration) {
+             // Paper start - Protect Bedrock and End Portal/Frames from being destroyed
+@@ -1505,11 +1508,12 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+                 toRemove.add(ticker); // Paper - Fix MC-117075 use removeAll
+             } else if (tickBlockEntities && this.shouldTickBlocksAt(ticker.getPos())) {
+                 ticker.tick();
+-                // Paper start - rewrite chunk system
+-                if ((++tickedEntities & 7) == 0) {
+-                    ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)(Level)(Object)this).moonrise$midTickTasks();
++                // Pufferfish start - Parallel world ticking
++                ++tickedEntities;
++                if (!gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && (tickedEntities & 7) == 0) {
++                    this.moonrise$midTickTasks();
+                 }
+-                // Paper end - rewrite chunk system
++                // Pufferfish end - Parallel world ticking
+             }
+         }
+ 
+@@ -1528,7 +1532,11 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+             entity.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DISCARD);
+             // Paper end - Prevent block entity and entity crashes
+         }
+-        this.moonrise$midTickTasks(); // Paper - rewrite chunk system
++        // Pufferfish start - Parallel world ticking
++        if (!gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            this.moonrise$midTickTasks(); // Paper - rewrite chunk system
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     // Paper start - Option to prevent armor stands from doing entity lookups
+@@ -1679,6 +1687,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public @Nullable BlockEntity getBlockEntity(final BlockPos pos) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThreadOrAsyncThread((ServerLevel) this, "Cannot read world asynchronously"); // Pufferfish - Parallel world ticking
+         // Paper start - Perf: Optimize capturedTileEntities lookup
+         net.minecraft.world.level.block.entity.BlockEntity blockEntity;
+         if (!this.capturedBlockEntities.isEmpty() && (blockEntity = this.capturedBlockEntities.get(pos)) != null) {
+@@ -1695,6 +1704,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     }
+ 
+     public void setBlockEntity(final BlockEntity blockEntity) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel) this, "Cannot modify world asynchronously"); // Pufferfish - Parallel world ticking
+         BlockPos pos = blockEntity.getBlockPos();
+         if (this.isInValidBounds(pos)) {
+             // CraftBukkit start
+@@ -1767,6 +1777,7 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+ 
+     @Override
+     public List<Entity> getEntities(final @Nullable Entity except, final AABB bb, final Predicate<? super Entity> selector) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel)this, bb, "Cannot getEntities asynchronously"); // Pufferfish - Parallel world ticking (additional concurrency issues logs)
+         Profiler.get().incrementCounter("getEntities");
+         // Paper start - rewrite chunk system
+         final List<Entity> ret = new java.util.ArrayList<>();
+@@ -2114,8 +2125,15 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+     public abstract RecipeAccess recipeAccess();
+ 
+     public BlockPos getBlockRandomPos(final int xo, final int yo, final int zo, final int yMask) {
+-        this.randValue = this.randValue * 3 + 1013904223;
+-        int val = this.randValue >> 2;
++        // Pufferfish start - Parallel world ticking
++        int val;
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            val = this.random.nextInt() >> 2;
++        } else {
++            this.randValue = this.randValue * 3 + 1013904223;
++            val = this.randValue >> 2;
++        }
++        // Pufferfish end - Parallel world ticking
+         return new BlockPos(xo + (val & 15), yo + (val >> 16 & yMask), zo + (val >> 8 & 15));
+     }
+ 
+diff --git a/net/minecraft/world/level/block/MushroomBlock.java b/net/minecraft/world/level/block/MushroomBlock.java
+index 8d466e5a3e187cb151a7513de3e78d3350b32277..a9624dffef7747763c977e1d8ad76ca61d678230 100644
+--- a/net/minecraft/world/level/block/MushroomBlock.java
++++ b/net/minecraft/world/level/block/MushroomBlock.java
+@@ -94,7 +94,7 @@ public class MushroomBlock extends VegetationBlock implements BonemealableBlock
+         }
+ 
+         level.removeBlock(pos, false);
+-        SaplingBlock.treeType = (this == Blocks.BROWN_MUSHROOM) ? org.bukkit.TreeType.BROWN_MUSHROOM : org.bukkit.TreeType.RED_MUSHROOM; // CraftBukkit
++        SaplingBlock.setTreeTypeTL((this == Blocks.BROWN_MUSHROOM) ? org.bukkit.TreeType.BROWN_MUSHROOM : org.bukkit.TreeType.RED_MUSHROOM); // CraftBukkit // Pufferfish - Parallel world ticking
+         if (feature.get().value().place(level, level.getChunkSource().getGenerator(), random, pos)) {
+             return true;
+         }
+diff --git a/net/minecraft/world/level/block/NetherFungusBlock.java b/net/minecraft/world/level/block/NetherFungusBlock.java
+index 82ab930bf438e988d637786bdde88e34ea073a2f..3e9d090c9fd6d6a312dbf0256361ded8b9d6b46b 100644
+--- a/net/minecraft/world/level/block/NetherFungusBlock.java
++++ b/net/minecraft/world/level/block/NetherFungusBlock.java
+@@ -84,9 +84,9 @@ public class NetherFungusBlock extends VegetationBlock implements BonemealableBl
+             // CraftBukkit start
+             .map((value) -> {
+                 if (this == Blocks.WARPED_FUNGUS) {
+-                    SaplingBlock.treeType = org.bukkit.TreeType.WARPED_FUNGUS;
++                    SaplingBlock.setTreeTypeTL(org.bukkit.TreeType.WARPED_FUNGUS); // Pufferfish - Parallel world ticking
+                 } else if (this == Blocks.CRIMSON_FUNGUS) {
+-                    SaplingBlock.treeType = org.bukkit.TreeType.CRIMSON_FUNGUS;
++                    SaplingBlock.setTreeTypeTL(org.bukkit.TreeType.CRIMSON_FUNGUS); // Pufferfish - Parallel world ticking
+                 }
+                 return value;
+             })
+diff --git a/net/minecraft/world/level/block/RedStoneWireBlock.java b/net/minecraft/world/level/block/RedStoneWireBlock.java
+index 35e49078d8d36ae4683de26988435d971c7f0e89..48f1c6003c495b77b904995158bf36674f7d37d6 100644
+--- a/net/minecraft/world/level/block/RedStoneWireBlock.java
++++ b/net/minecraft/world/level/block/RedStoneWireBlock.java
+@@ -66,6 +66,7 @@ public class RedStoneWireBlock extends Block {
+     private final BlockState crossState;
+     private final RedstoneWireEvaluator evaluator = new DefaultRedstoneWireEvaluator(this);
+     public boolean shouldSignal = true;
++    private final ThreadLocal<Boolean> shouldSignalTL = ThreadLocal.withInitial(() -> true); // Pufferfish - Parallel world ticking
+ 
+     @Override
+     public MapCodec<RedStoneWireBlock> codec() {
+@@ -287,7 +288,13 @@ public class RedStoneWireBlock extends Block {
+             if (orientation != null) {
+                 source = pos.relative(orientation.getFront().getOpposite());
+             }
+-            turbo.updateSurroundingRedstone(worldIn, pos, state, source);
++            // Pufferfish start - Parallel world ticking
++            if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                worldIn.turbo.updateSurroundingRedstone(worldIn, pos, state, source);
++            } else {
++                turbo.updateSurroundingRedstone(worldIn, pos, state, source);
++            }
++            // Pufferfish end - Parallel world ticking
+             return;
+         }
+         updatePowerStrength(worldIn, pos, state, orientation, blockAdded);
+@@ -311,7 +318,13 @@ public class RedStoneWireBlock extends Block {
+                 // [Space Walker] suppress shape updates and emit those manually to
+                 // bypass the new neighbor update stack.
+                 if (level.setBlock(pos, state, Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_CLIENTS)) {
+-                    turbo.updateNeighborShapes(level, pos, state);
++                    // Pufferfish start - Parallel world ticking
++                    if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++                        level.turbo.updateNeighborShapes(level, pos, state);
++                    } else {
++                        turbo.updateNeighborShapes(level, pos, state);
++                    }
++                    // Pufferfish end - Parallel world ticking
+                 }
+             }
+         }
+@@ -334,10 +347,19 @@ public class RedStoneWireBlock extends Block {
+     }
+ 
+     public int getBlockSignal(final Level level, final BlockPos pos) {
+-        this.shouldSignal = false;
+-        int blockSignal = level.getBestNeighborSignal(pos);
+-        this.shouldSignal = true;
+-        return blockSignal;
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            this.shouldSignalTL.set(false);
++            int bestNeighborSignal = level.getBestNeighborSignal(pos);
++            this.shouldSignalTL.set(true);
++            return bestNeighborSignal;
++        } else {
++            this.shouldSignal = false;
++            int blockSignal = level.getBestNeighborSignal(pos);
++            this.shouldSignal = true;
++            return blockSignal;
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     private void checkCornerChangeAt(final Level level, final BlockPos pos) {
+@@ -430,12 +452,23 @@ public class RedStoneWireBlock extends Block {
+ 
+     @Override
+     protected int getDirectSignal(final BlockState state, final BlockGetter level, final BlockPos pos, final Direction direction) {
+-        return !this.shouldSignal ? Redstone.SIGNAL_MIN : state.getSignal(level, pos, direction);
++        // Pufferfish start - Parallel world ticking
++        boolean signal = gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking ? this.shouldSignalTL.get() : this.shouldSignal;
++        return !signal ? Redstone.SIGNAL_MIN : state.getSignal(level, pos, direction);
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     @Override
+     protected int getSignal(final BlockState state, final BlockGetter level, final BlockPos pos, final Direction direction) {
+-        if (this.shouldSignal && direction != Direction.DOWN) {
++        // Pufferfish start - Parallel world ticking
++        boolean signal;
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            signal = this.shouldSignalTL.get();
++        } else {
++            signal = this.shouldSignal;
++        }
++        // Pufferfish end - Parallel world ticking
++        if (signal && direction != Direction.DOWN) { // Pufferfish - Parallel world ticking
+             int power = this.ownSignal(state, level, pos);
+             if (power == 0) {
+                 return Redstone.SIGNAL_MIN;
+@@ -472,7 +505,13 @@ public class RedStoneWireBlock extends Block {
+ 
+     @Override
+     protected boolean isSignalSource(final BlockState state) {
+-        return this.shouldSignal;
++        // Pufferfish start - Parallel world ticking
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) {
++            return this.shouldSignalTL.get();
++        } else {
++            return this.shouldSignal;
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ 
+     public static int getColorForPower(final int power) {
+diff --git a/net/minecraft/world/level/block/SaplingBlock.java b/net/minecraft/world/level/block/SaplingBlock.java
+index cbf7845ca64f1b716af3e50ac8716373d2ae3755..5a2ad04b8cd9919d7dd34c738f6cf25db1ea8b14 100644
+--- a/net/minecraft/world/level/block/SaplingBlock.java
++++ b/net/minecraft/world/level/block/SaplingBlock.java
+@@ -25,6 +25,26 @@ public class SaplingBlock extends VegetationBlock implements BonemealableBlock {
+     private static final VoxelShape SHAPE = Block.column(12.0, 0.0, 12.0);
+     protected final TreeGrower treeGrower;
+     public static org.bukkit.@org.jspecify.annotations.Nullable TreeType treeType; // CraftBukkit
++    // Pufferfish start - Parallel world ticking
++    public static final ThreadLocal<org.bukkit.TreeType> treeTypeTL = new ThreadLocal<>();
++
++    public static org.bukkit.TreeType getTreeTypeTL() {
++        org.bukkit.TreeType treeTypeRTCopy;
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking && (treeTypeRTCopy = treeTypeTL.get()) != null) return treeTypeRTCopy;
++
++        synchronized (SaplingBlock.class) {
++            return treeType;
++        }
++    }
++
++    public static void setTreeTypeTL(org.bukkit.TreeType value) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) treeTypeTL.set(value);
++
++        synchronized (SaplingBlock.class) {
++            treeType = value;
++        }
++    }
++    // Pufferfish end - Parallel world ticking
+ 
+     @Override
+     public MapCodec<? extends SaplingBlock> codec() {
+@@ -59,7 +79,7 @@ public class SaplingBlock extends VegetationBlock implements BonemealableBlock {
+             } else {
+                 level.captureTreeGeneration = true;
+                 java.util.List<org.bukkit.craftbukkit.block.CraftBlockState> capturedBlockStates;
+-                org.bukkit.TreeType treeType;
++                org.bukkit.TreeType treeTypeLocal;
+                 try {
+                     this.treeGrower.growTree(level, level.getChunkSource().getGenerator(), pos, state, random);
+                 } finally {
+@@ -68,14 +88,16 @@ public class SaplingBlock extends VegetationBlock implements BonemealableBlock {
+                     capturedBlockStates = new java.util.ArrayList<>(level.capturedBlockStates.values());
+                     level.capturedBlockStates.clear();
+ 
+-                    treeType = SaplingBlock.treeType;
+-                    SaplingBlock.treeType = null;
++                    // Pufferfish start - Parallel world ticking
++                    treeTypeLocal = SaplingBlock.getTreeTypeTL();
++                    SaplingBlock.setTreeTypeTL(null);
++                    // Pufferfish end - Parallel world ticking
+                 }
+                 if (!capturedBlockStates.isEmpty()) {
+                     org.bukkit.Location location = org.bukkit.craftbukkit.util.CraftLocation.toBukkit(pos, level);
+                     org.bukkit.event.world.StructureGrowEvent event = null;
+-                    if (treeType != null) {
+-                        event = new org.bukkit.event.world.StructureGrowEvent(location, treeType, false, null, (java.util.List<org.bukkit.block.BlockState>) (java.util.List<? extends org.bukkit.block.BlockState>) capturedBlockStates);
++                    if (treeTypeLocal != null) { // Pufferfish - Parallel world ticking
++                        event = new org.bukkit.event.world.StructureGrowEvent(location, treeTypeLocal, false, null, (java.util.List<org.bukkit.block.BlockState>) (java.util.List<? extends org.bukkit.block.BlockState>) capturedBlockStates); // Pufferfish - Parallel world ticking
+                         org.bukkit.Bukkit.getPluginManager().callEvent(event);
+                     }
+                     if (event == null || !event.isCancelled()) {
+diff --git a/net/minecraft/world/level/block/entity/SculkCatalystBlockEntity.java b/net/minecraft/world/level/block/entity/SculkCatalystBlockEntity.java
+index 4aa2d141eba2596e782fc4ab4890c5e2d80eb811..604b6810a878465fa12414e7a920082f09372656 100644
+--- a/net/minecraft/world/level/block/entity/SculkCatalystBlockEntity.java
++++ b/net/minecraft/world/level/block/entity/SculkCatalystBlockEntity.java
+@@ -44,9 +44,7 @@ public class SculkCatalystBlockEntity extends BlockEntity implements GameEventLi
+     // Paper end - Fix NPE in SculkBloomEvent world access
+ 
+     public static void serverTick(final Level level, final BlockPos pos, final BlockState state, final SculkCatalystBlockEntity entity) {
+-        org.bukkit.craftbukkit.event.CraftEventFactory.sourceBlockOverride = pos; // CraftBukkit - SPIGOT-7068: Add source block override, not the most elegant way but better than passing down a BlockPos up to five methods deep.
+         entity.catalystListener.getSculkSpreader().updateCursors(level, pos, level.getRandom(), true);
+-        org.bukkit.craftbukkit.event.CraftEventFactory.sourceBlockOverride = null; // CraftBukkit
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/level/block/grower/TreeGrower.java b/net/minecraft/world/level/block/grower/TreeGrower.java
+index 2a537a329b635d48865e59c03589b89594ef012e..78dbe1a87fa8bfa8053b92520449541ee56b43a4 100644
+--- a/net/minecraft/world/level/block/grower/TreeGrower.java
++++ b/net/minecraft/world/level/block/grower/TreeGrower.java
+@@ -215,55 +215,59 @@ public final class TreeGrower {
+ 
+     // CraftBukkit start
+     private void setTreeType(Holder<ConfiguredFeature<?, ?>> feature) {
++        // Pufferfish start - Parallel world ticking
++        org.bukkit.TreeType treeType;
+         if (feature.is(TreeFeatures.OAK) || feature.is(TreeFeatures.OAK_BEES_005)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.TREE;
++            treeType = org.bukkit.TreeType.TREE;
+         } else if (feature.is(TreeFeatures.HUGE_RED_MUSHROOM)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.RED_MUSHROOM;
++            treeType = org.bukkit.TreeType.RED_MUSHROOM;
+         } else if (feature.is(TreeFeatures.HUGE_BROWN_MUSHROOM)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.BROWN_MUSHROOM;
++            treeType = org.bukkit.TreeType.BROWN_MUSHROOM;
+         } else if (feature.is(TreeFeatures.JUNGLE_TREE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.COCOA_TREE;
++            treeType = org.bukkit.TreeType.COCOA_TREE;
+         } else if (feature.is(TreeFeatures.JUNGLE_TREE_NO_VINE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.SMALL_JUNGLE;
++            treeType = org.bukkit.TreeType.SMALL_JUNGLE;
+         } else if (feature.is(TreeFeatures.PINE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.TALL_REDWOOD;
++            treeType = org.bukkit.TreeType.TALL_REDWOOD;
+         } else if (feature.is(TreeFeatures.SPRUCE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.REDWOOD;
++            treeType = org.bukkit.TreeType.REDWOOD;
+         } else if (feature.is(TreeFeatures.ACACIA)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.ACACIA;
++            treeType = org.bukkit.TreeType.ACACIA;
+         } else if (feature.is(TreeFeatures.BIRCH) || feature.is(TreeFeatures.BIRCH_BEES_005)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.BIRCH;
++            treeType = org.bukkit.TreeType.BIRCH;
+         } else if (feature.is(TreeFeatures.SUPER_BIRCH_BEES_0002)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.TALL_BIRCH;
++            treeType = org.bukkit.TreeType.TALL_BIRCH;
+         } else if (feature.is(TreeFeatures.SWAMP_OAK)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.SWAMP;
++            treeType = org.bukkit.TreeType.SWAMP;
+         } else if (feature.is(TreeFeatures.FANCY_OAK) || feature.is(TreeFeatures.FANCY_OAK_BEES_005)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.BIG_TREE;
++            treeType = org.bukkit.TreeType.BIG_TREE;
+         } else if (feature.is(TreeFeatures.JUNGLE_BUSH)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.JUNGLE_BUSH;
++            treeType = org.bukkit.TreeType.JUNGLE_BUSH;
+         } else if (feature.is(TreeFeatures.DARK_OAK)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.DARK_OAK;
++            treeType = org.bukkit.TreeType.DARK_OAK;
+         } else if (feature.is(TreeFeatures.MEGA_SPRUCE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.MEGA_REDWOOD;
++            treeType = org.bukkit.TreeType.MEGA_REDWOOD;
+         } else if (feature.is(TreeFeatures.MEGA_PINE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.MEGA_PINE;
++            treeType = org.bukkit.TreeType.MEGA_PINE;
+         } else if (feature.is(TreeFeatures.MEGA_JUNGLE_TREE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.JUNGLE;
++            treeType = org.bukkit.TreeType.JUNGLE;
+         } else if (feature.is(TreeFeatures.AZALEA_TREE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.AZALEA;
++            treeType = org.bukkit.TreeType.AZALEA;
+         } else if (feature.is(TreeFeatures.MANGROVE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.MANGROVE;
++            treeType = org.bukkit.TreeType.MANGROVE;
+         } else if (feature.is(TreeFeatures.TALL_MANGROVE)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.TALL_MANGROVE;
++            treeType = org.bukkit.TreeType.TALL_MANGROVE;
+         } else if (feature.is(TreeFeatures.CHERRY) || feature.is(TreeFeatures.CHERRY_BEES_005)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.CHERRY;
++            treeType = org.bukkit.TreeType.CHERRY;
+         } else if (feature.is(TreeFeatures.PALE_OAK) || feature.is(TreeFeatures.PALE_OAK_BONEMEAL)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.PALE_OAK;
++            treeType = org.bukkit.TreeType.PALE_OAK;
+         } else if (feature.is(TreeFeatures.PALE_OAK_CREAKING)) {
+-            net.minecraft.world.level.block.SaplingBlock.treeType = org.bukkit.TreeType.PALE_OAK_CREAKING;
++            treeType = org.bukkit.TreeType.PALE_OAK_CREAKING;
+         } else {
+             throw new IllegalArgumentException("Unknown tree generator " + feature);
+         }
++        net.minecraft.world.level.block.SaplingBlock.setTreeTypeTL(treeType);
++        // Pufferfish end - Parallel world ticking
+     }
+     // CraftBukkit end
+ }
+diff --git a/net/minecraft/world/level/chunk/LevelChunk.java b/net/minecraft/world/level/chunk/LevelChunk.java
+index 4ff1ae08878836e4a47af803748924587de02e7f..50b5496c52d5983749e50ff35218ef5f228a5571 100644
+--- a/net/minecraft/world/level/chunk/LevelChunk.java
++++ b/net/minecraft/world/level/chunk/LevelChunk.java
+@@ -379,6 +379,7 @@ public class LevelChunk extends ChunkAccess implements DebugValueSource, ca.spot
+ 
+     @Override
+     public @Nullable BlockState setBlockState(final BlockPos pos, final BlockState state, final @Block.UpdateFlags int flags) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(this.level, pos, "Updating block asynchronously"); // Pufferfish - Parallel world ticking
+         int y = pos.getY();
+         LevelChunkSection section = this.getSection(this.getSectionIndex(y));
+         boolean wasEmpty = section.hasOnlyAir();
+diff --git a/net/minecraft/world/level/chunk/ProtoChunk.java b/net/minecraft/world/level/chunk/ProtoChunk.java
+index 93a14a457312ee0b4ddf6e80c425f1a50cc9edf1..a1582a1b5e8dda233a2a316cd3399d99d7508d5f 100644
+--- a/net/minecraft/world/level/chunk/ProtoChunk.java
++++ b/net/minecraft/world/level/chunk/ProtoChunk.java
+@@ -44,7 +44,7 @@ public class ProtoChunk extends ChunkAccess {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private volatile @Nullable LevelLightEngine lightEngine;
+     private volatile ChunkStatus status = ChunkStatus.EMPTY;
+-    private final List<CompoundTag> entities = Lists.newArrayList();
++    private final List<CompoundTag> entities = Collections.synchronizedList(Lists.newArrayList()); // Pufferfish - Optimize collections
+     private @Nullable CarvingMask carvingMask;
+     private @Nullable BelowZeroRetrogen belowZeroRetrogen;
+     private final ProtoChunkTicks<Block> blockTicks;
+diff --git a/net/minecraft/world/level/entity/EntityTickList.java b/net/minecraft/world/level/entity/EntityTickList.java
+index 8bec89eb9ede23e26cbc4e23ad2dda5bc1b2d815..75eec92d16426f5aacf0906a56836302cafcf9fd 100644
+--- a/net/minecraft/world/level/entity/EntityTickList.java
++++ b/net/minecraft/world/level/entity/EntityTickList.java
+@@ -5,22 +5,38 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+ import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
+ import it.unimi.dsi.fastutil.ints.Int2ObjectMap.Entry;
+ import java.util.function.Consumer;
++import net.minecraft.server.level.ServerLevel; // Pufferfish - Parallel world ticking
+ import net.minecraft.world.entity.Entity;
+ import org.jspecify.annotations.Nullable;
+ 
+ public class EntityTickList {
+     public final ca.spottedleaf.moonrise.common.list.IteratorSafeOrderedReferenceSet<net.minecraft.world.entity.Entity> entities = new ca.spottedleaf.moonrise.common.list.IteratorSafeOrderedReferenceSet<>(); // Paper - rewrite chunk system // Pufferfish - private->public
+ 
++    // Pufferfish start - Parallel world ticking
++    @Nullable
++    private final ServerLevel serverLevel;
++
++    public EntityTickList() {
++        this(null);
++    }
++
++    public EntityTickList(@Nullable ServerLevel serverLevel) {
++        this.serverLevel = serverLevel;
++    }
++    // Pufferfish end - Parallel world ticking
++
+     private void ensureActiveIsNotIterated() {
+         // Paper - rewrite chunk system
+     }
+ 
+     public void add(final Entity entity) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(entity, "Asynchronous entity ticklist addition"); // Pufferfish - Parallel world ticking
+         this.ensureActiveIsNotIterated();
+         this.entities.add(entity); // Paper - rewrite chunk system
+     }
+ 
+     public void remove(final Entity entity) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(entity, "Asynchronous entity ticklist removal"); // Pufferfish - Parallel world ticking
+         this.ensureActiveIsNotIterated();
+         this.entities.remove(entity); // Paper - rewrite chunk system
+     }
+@@ -30,6 +46,7 @@ public class EntityTickList {
+     }
+ 
+     public void forEach(final Consumer<Entity> output) {
++        if (gg.pufferfish.pufferfish.PufferfishConfig.enableParallelWorldTicking) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(serverLevel, "Asynchronous entity ticklist iteration"); // Pufferfish - Parallel world ticking
+         // Paper start - rewrite chunk system
+         // To ensure nothing weird happens with dimension travelling, do not iterate over new entries...
+         // (by dfl iterator() is configured to not iterate over new entries)
+diff --git a/net/minecraft/world/level/saveddata/maps/MapIndex.java b/net/minecraft/world/level/saveddata/maps/MapIndex.java
+index 6b3ce2ded53a7ea46cf7f0cb49043a022f6d9ee7..e01c2ee127319b49fd27f6707982488c9c230fa1 100644
+--- a/net/minecraft/world/level/saveddata/maps/MapIndex.java
++++ b/net/minecraft/world/level/saveddata/maps/MapIndex.java
+@@ -26,8 +26,12 @@ public class MapIndex extends SavedData {
+     }
+ 
+     public MapId getNextMapId() {
+-        MapId id = new MapId(++this.lastMapId);
+-        this.setDirty();
+-        return id;
++        // Pufferfish start - Parallel world ticking
++        synchronized (TYPE) {
++            MapId id = new MapId(++this.lastMapId);
++            this.setDirty();
++            return id;
++        }
++        // Pufferfish end - Parallel world ticking
+     }
+ }
+diff --git a/net/minecraft/world/level/storage/SavedDataStorage.java b/net/minecraft/world/level/storage/SavedDataStorage.java
+index f359e53024019f35aaa5cd8477da708bda2fc57a..a30cb768da267bd66203422541e9af73a725beb0 100644
+--- a/net/minecraft/world/level/storage/SavedDataStorage.java
++++ b/net/minecraft/world/level/storage/SavedDataStorage.java
+@@ -40,7 +40,7 @@ import org.slf4j.Logger;
+ 
+ public class SavedDataStorage implements AutoCloseable {
+     private static final Logger LOGGER = LogUtils.getLogger();
+-    public final Map<SavedDataType<?>, Optional<SavedData>> cache = new HashMap<>();
++    public final Map<SavedDataType<?>, Optional<SavedData>> cache = new java.util.concurrent.ConcurrentHashMap<>(); // Pufferfish - Parallel world ticking - thread-safe saved data storage
+     private final DataFixer fixerUpper;
+     private final HolderLookup.Provider registries;
+     private final Path dataFolder;
+@@ -63,24 +63,29 @@ public class SavedDataStorage implements AutoCloseable {
+     }
+ 
+     public <T extends SavedData> T computeIfAbsent(final SavedDataType<T> type) {
+-        T data = this.get(type);
+-        if (data != null) {
+-            return data;
+-        }
++        // Pufferfish start - Parallel world ticking - thread-safe saved data storage
++        Optional<SavedData> data = this.cache.compute(type, (key, existing) -> {
++            if (existing == null) {
++                existing = Optional.ofNullable(this.readSavedData(type));
++            }
++
++            if (existing.isEmpty()) {
++                SavedData newData = type.constructor().get();
++                newData.setDirty();
++                existing = Optional.of(newData);
++            }
+ 
+-        T newData = (T)type.constructor().get();
+-        this.set(type, newData);
+-        return newData;
++            return existing;
++        });
++        return (T)data.orElseThrow();
++        // Pufferfish end - Parallel world ticking - thread-safe saved data storage
+     }
+ 
+     public <T extends SavedData> @Nullable T get(final SavedDataType<T> type) {
+-        Optional<SavedData> data = this.cache.get(type);
+-        if (data == null) {
+-            data = Optional.ofNullable(this.readSavedData(type));
+-            this.cache.put(type, data);
+-        }
+-
++        // Pufferfish start - Parallel world ticking - thread-safe saved data storage
++        Optional<SavedData> data = this.cache.computeIfAbsent(type, key -> Optional.ofNullable(this.readSavedData(type)));
+         return (T)data.orElse(null);
++        // Pufferfish end - Parallel world ticking - thread-safe saved data storage
+     }
+ 
+     private <T extends SavedData> @Nullable T readSavedData(final SavedDataType<T> type) {
+@@ -143,7 +148,7 @@ public class SavedDataStorage implements AutoCloseable {
+         return gzip;
+     }
+ 
+-    public CompletableFuture<?> scheduleSave() {
++    public synchronized CompletableFuture<?> scheduleSave() { // Pufferfish - Parallel world ticking - thread-safe saved data storage
+         if (this.closed) {
+             throw new IllegalStateException("Trying to schedule save when SavedDataStorage is already closed");
+         }
+diff --git a/net/minecraft/world/ticks/LevelChunkTicks.java b/net/minecraft/world/ticks/LevelChunkTicks.java
+index 88eb48034d8022600dc08b4dcf6162bbdd8c6d33..39702bff0856c69f18fafc87d025037e45f8fc78 100644
+--- a/net/minecraft/world/ticks/LevelChunkTicks.java
++++ b/net/minecraft/world/ticks/LevelChunkTicks.java
+@@ -16,9 +16,9 @@ import org.jspecify.annotations.Nullable;
+ 
+ public class LevelChunkTicks<T> implements TickContainerAccess<T>, SerializableTickContainer<T>, ca.spottedleaf.moonrise.patches.chunk_system.ticks.ChunkSystemLevelChunkTicks { // Paper - rewrite chunk system
+     private static final Comparator<ScheduledTick<?>> SUB_TICK_ORDERING = Comparator.comparingLong(ScheduledTick::subTickOrder);
+-    private final Queue<ScheduledTick<T>> tickQueue = new PriorityQueue<>(ScheduledTick.DRAIN_ORDER);
++    private final Queue<ScheduledTick<T>> tickQueue = gg.pufferfish.pufferfish.util.PlatformCollections.priorityQueue(11, ScheduledTick.DRAIN_ORDER); // Pufferfish - Optimize level ticking - thread-safe only when PWT is enabled
+     private @Nullable List<SavedTick<T>> pendingTicks;
+-    private final Set<ScheduledTick<?>> ticksPerPosition = new ObjectOpenCustomHashSet<>(ScheduledTick.UNIQUE_TICK_HASH);
++    private final Set<ScheduledTick<?>> ticksPerPosition = gg.pufferfish.pufferfish.util.PlatformCollections.customHashSet(ScheduledTick.UNIQUE_TICK_HASH); // Pufferfish - Optimize level ticking - thread-safe only when PWT is enabled
+     private @Nullable BiConsumer<LevelChunkTicks<T>, ScheduledTick<T>> onTickAdded;
+ 
+     // Paper start - rewrite chunk system
+diff --git a/net/minecraft/world/ticks/LevelTicks.java b/net/minecraft/world/ticks/LevelTicks.java
+index 7bf9e93692debcef511bfa316aeef32ae8a7d3b7..4db8df077bdf00006259763c038403ef5f95467e 100644
+--- a/net/minecraft/world/ticks/LevelTicks.java
++++ b/net/minecraft/world/ticks/LevelTicks.java
+@@ -31,10 +31,12 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
+ public class LevelTicks<T> implements LevelTickAccess<T> {
+     private static final Comparator<LevelChunkTicks<?>> CONTAINER_DRAIN_ORDER = (o1, o2) -> ScheduledTick.INTRA_TICK_DRAIN_ORDER.compare(o1.peek(), o2.peek());
+     private final LongPredicate tickCheck;
+-    private final Long2ObjectMap<LevelChunkTicks<T>> allContainers = new Long2ObjectOpenHashMap<>();
+-    private final Long2LongMap nextTickForContainer = Util.make(new Long2LongOpenHashMap(), m -> m.defaultReturnValue(Long.MAX_VALUE));
+-    private final Queue<LevelChunkTicks<T>> containersToTick = new PriorityQueue<>(CONTAINER_DRAIN_ORDER);
+-    private final Queue<ScheduledTick<T>> toRunThisTick = new ArrayDeque<>();
++    // Pufferfish start - Optimize collections
++    private final Long2ObjectMap<LevelChunkTicks<T>> allContainers = gg.pufferfish.pufferfish.util.PlatformCollections.long2ObjectMap();
++    private final Long2LongMap nextTickForContainer = gg.pufferfish.pufferfish.util.PlatformCollections.long2LongMap(Long.MAX_VALUE);
++    private final Queue<LevelChunkTicks<T>> containersToTick = gg.pufferfish.pufferfish.util.PlatformCollections.priorityQueue(11, CONTAINER_DRAIN_ORDER);
++    private final Queue<ScheduledTick<T>> toRunThisTick = gg.pufferfish.pufferfish.util.PlatformCollections.queue();
++    // Pufferfish end - Optimize collections
+     private final List<ScheduledTick<T>> alreadyRunThisTick = new ArrayList<>();
+     private final Set<ScheduledTick<?>> toRunThisTickSet = new ObjectOpenCustomHashSet<>(ScheduledTick.UNIQUE_TICK_HASH);
+     private final BiConsumer<LevelChunkTicks<T>, ScheduledTick<T>> chunkScheduleUpdater = (container, newTick) -> {
+@@ -42,6 +44,7 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+             this.updateContainerScheduling(newTick);
+         }
+     };
++    private final java.util.concurrent.atomic.AtomicInteger toRunThisTickCount = new java.util.concurrent.atomic.AtomicInteger(0); // Pufferfish - Optimize level ticking
+ 
+     public LevelTicks(final LongPredicate tickCheck) {
+         this.tickCheck = tickCheck;
+@@ -172,16 +175,19 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+     }
+ 
+     private void scheduleForThisTick(final ScheduledTick<T> tick) {
++        if (tick == null) return; // Pufferfish - Optimize level ticking
+         this.toRunThisTick.add(tick);
++        this.toRunThisTickCount.incrementAndGet(); // Pufferfish - Optimize level ticking
+     }
+ 
+     private boolean canScheduleMoreTicks(final int maxTicksToProcess) {
+-        return this.toRunThisTick.size() < maxTicksToProcess;
++        return this.toRunThisTickCount.get() < maxTicksToProcess; // Pufferfish - Optimize level ticking
+     }
+ 
+     private void runCollectedTicks(final BiConsumer<BlockPos, T> output) {
+         while (!this.toRunThisTick.isEmpty()) {
+             ScheduledTick<T> entry = this.toRunThisTick.poll();
++            this.toRunThisTickCount.decrementAndGet(); // Pufferfish - Optimize level ticking
+             if (!this.toRunThisTickSet.isEmpty()) {
+                 this.toRunThisTickSet.remove(entry);
+             }
+@@ -193,6 +199,7 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+ 
+     private void cleanupAfterTick() {
+         this.toRunThisTick.clear();
++        this.toRunThisTickCount.set(0); // Pufferfish - Optimize level ticking
+         this.containersToTick.clear();
+         this.alreadyRunThisTick.clear();
+         this.toRunThisTickSet.clear();
+@@ -275,7 +282,11 @@ public class LevelTicks<T> implements LevelTickAccess<T> {
+ 
+     @Override
+     public int count() {
+-        return this.allContainers.values().stream().mapToInt(TickAccess::count).sum();
++        // Pufferfish start - Optimize level ticking
++        synchronized (this.allContainers) {
++            return this.allContainers.values().stream().mapToInt(TickAccess::count).sum();
++        }
++        // Pufferfish end - Optimize level ticking
+     }
+ 
+     @FunctionalInterface

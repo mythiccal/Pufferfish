@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mythiccal <cwood2014.cw@gmail.com>
+Date: Tue, 22 Sep 2026 16:21:34 +0100
+Subject: [PATCH] Parallel world ticking
+
+Expose whether parallel world ticking is enabled and per-world tick time samples.
+
+diff --git a/src/main/java/org/bukkit/Server.java b/src/main/java/org/bukkit/Server.java
+index a8e67888e63ae1d387e432827dc96590767b7b7f..902daa1ecb1d4eff8dbfb055e07ee7e8879defca 100644
+--- a/src/main/java/org/bukkit/Server.java
++++ b/src/main/java/org/bukkit/Server.java
+@@ -2774,4 +2774,15 @@ public interface Server extends PluginMessageRecipient, net.kyori.adventure.audi
+      */
+     void allowPausing(@NotNull org.bukkit.plugin.Plugin plugin, boolean value);
+     // Paper end - API to check if the server is sleeping
++
++    // Pufferfish start - Parallel world ticking
++    /**
++     * Returns whether Parallel World Ticking is enabled.
++     *
++     * @return whether each world ticks on its own thread
++     */
++    default boolean isParallelWorldTickingEnabled() {
++        return false;
++    }
++    // Pufferfish end - Parallel world ticking
+ }
+diff --git a/src/main/java/org/bukkit/World.java b/src/main/java/org/bukkit/World.java
+index bf2f7c4959f9f2cd43bbd4d4310e7eedf10cf892..25e32e9b5dc33003effdddcb50066409d1f1f551 100644
+--- a/src/main/java/org/bukkit/World.java
++++ b/src/main/java/org/bukkit/World.java
+@@ -4719,4 +4719,23 @@ public interface World extends RegionAccessor, WorldInfo, PluginMessageRecipient
+             }
+         }
+     }
++
++    // Pufferfish start - Parallel world ticking
++    /**
++     * Get a sample of the world last tick times (in nanos)
++     *
++     * @return A sample of the world last tick times (in nanos)
++     */
++    public default long @NotNull [] getTickTimes() {
++        return new long[0];
++    }
++    /**
++     * Get the world's average tick time (in millis)
++     *
++     * @return World's local average tick time (in millis)
++     */
++    public default double getAverageTickTime () {
++        return 0.0;
++    }
++    // Pufferfish end - Parallel world ticking
+ }

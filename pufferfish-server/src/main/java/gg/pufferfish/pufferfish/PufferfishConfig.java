@@ -327,6 +327,11 @@ public class PufferfishConfig {
 	public static boolean enableAsyncChunkSending;
 	public static int asyncChunkSendingMaxThreads;
 
+	public static boolean enableParallelWorldTicking;
+	public static int parallelWorldTickingThreadCount;
+	public static boolean logContainerCreationStacktraces;
+	public static boolean disableHardThrow;
+
 	private static boolean asyncSettingsInitialized;
 	private static void asyncSettings() {
 		boolean tracker = getBoolean("async.parallel-entity-tracker.enable", false,
@@ -344,6 +349,19 @@ public class PufferfishConfig {
 		int chunkSendingThreads = getInt("async.chunk-sending.max-threads", 1,
 				"Worker threads used for chunk sending.",
 				"0 = a quarter of available cores; negative = all cores minus that many.");
+
+		boolean parallelWorlds = getBoolean("async.parallel-world-ticking.enable", false,
+				"Ticks each world on its own thread, waiting for every world to finish before the next cycle.",
+				"Experimental. Cross-world plugin work must be scheduled onto the destination world's tick thread.",
+				"Requires a restart. See https://bxteam.org/docs/divinemc/features/parallel-world-ticking");
+		int parallelWorldThreads = getInt("async.parallel-world-ticking.thread-count", 4,
+				"How many worlds may tick at the same time. Extra worlds wait for a permit.");
+		boolean logContainers = getBoolean("async.parallel-world-ticking.log-container-creation-stacktraces", false,
+				"Records where every container menu was created so cross-world container errors point at the caller.",
+				"Allocates a Throwable per menu. Debugging aid.");
+		boolean silenceThreadChecks = getBoolean("async.parallel-world-ticking.disable-hard-throw", false,
+				"Logs 'not on main thread' errors without throwing.",
+				"Not recommended: skipping these checks can corrupt world data. Requires a restart.");
 
 		setComment("async", "Experimental async optimizations ported from DivineMC/Petal.",
 				"These are off by default. Enable individually and restart the server.",
@@ -367,6 +385,14 @@ public class PufferfishConfig {
 		asyncChunkSendingMaxThreads = resolveThreadCount(chunkSendingThreads, available);
 		if (enableAsyncChunkSending) {
 			MinecraftServer.LOGGER.info("Using {} threads for async chunk sending", asyncChunkSendingMaxThreads);
+		}
+
+		enableParallelWorldTicking = parallelWorlds;
+		parallelWorldTickingThreadCount = Math.max(parallelWorldThreads, 1);
+		logContainerCreationStacktraces = logContainers;
+		disableHardThrow = silenceThreadChecks;
+		if (enableParallelWorldTicking) {
+			MinecraftServer.LOGGER.info("Using {} permits for parallel world ticking", parallelWorldTickingThreadCount);
 		}
 	}
 
